@@ -13,7 +13,7 @@ export interface GameHost {
   robotById(id: number): ServerRobot | undefined;
   emit(e: GameEvent): void;
   applyDamage(target: ServerRobot, amount: number, attacker: ServerRobot | null, cause: DamageCause, point: Vec3): number;
-  heal(target: ServerRobot, amount: number): void;
+  heal(target: ServerRobot, amount: number, sourceId?: number): void;
   combatEnabled(): boolean;
   sendTo(robot: ServerRobot, type: string, msg: unknown): void;
   markRosterDirty(): void;

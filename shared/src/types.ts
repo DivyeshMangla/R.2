@@ -237,7 +237,7 @@ export type GameEvent =
   | { k: 'impact'; pid: number; p: Vec3; n: Vec3; target: number; dmg: number; owner: number }
   | { k: 'bounce'; pid: number; p: Vec3; v: Vec3 }
   | { k: 'dmg'; target: number; source: number; amount: number; p: Vec3; cause: 'ram' | 'mine' }
-  | { k: 'heal'; target: number; amount: number }
+  | { k: 'heal'; target: number; amount: number; from?: number }
   | { k: 'death'; id: number; p: Vec3; q: Quat; v: Vec3; killer: number }
   | { k: 'kill'; killer: number; victim: number; assists: number[] }
   | { k: 'respawn'; id: number; p: Vec3; yaw: number }

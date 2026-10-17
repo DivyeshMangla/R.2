@@ -1,97 +1,190 @@
 export type QualityName = 'Low' | 'Medium' | 'High' | 'Ultra';
 
-export interface QualitySettings {
-  name: QualityName;
+/** Every graphics feature the renderer can toggle. Presets fill these; the settings menu overrides them. */
+export interface GraphicsSettings {
+  preset: QualityName;
   pixelRatioCap: number;
+  pixelRatioScale: number;
+  shadows: boolean;
   shadowMapSize: number;
   postProcessing: boolean;
   bloom: boolean;
   ao: boolean;
   aoQuality: 'Performance' | 'Low' | 'Medium' | 'High' | 'Ultra';
   smaa: boolean;
+  grading: boolean;
+  filmGrain: boolean;
   vignette: boolean;
-  chromaticAberration: boolean;
-  particleMultiplier: number;
+  /** Chromatic aberration pulses + radial dash blur. */
+  lensEffects: boolean;
+  motionBlur: boolean;
+  softParticles: boolean;
+  distortion: boolean;
+  maxDynamicLights: number;
+  particleDensity: number;
   maxDecals: number;
+  skidMarks: boolean;
+  dustMotes: boolean;
+  contactShadows: boolean;
+  envMapSize: number;
 }
 
-export const QUALITY_PRESETS: Readonly<Record<QualityName, QualitySettings>> = {
+export type ToggleKey = {
+  [K in keyof GraphicsSettings]: GraphicsSettings[K] extends boolean ? K : never;
+}[keyof GraphicsSettings];
+
+export const TOGGLE_LABELS: Readonly<Record<ToggleKey, string>> = {
+  shadows: 'Shadows',
+  postProcessing: 'Post-processing',
+  bloom: 'Bloom',
+  ao: 'Ambient occlusion (N8AO)',
+  smaa: 'Anti-aliasing (SMAA)',
+  grading: 'Color grading (LUT)',
+  filmGrain: 'Film grain',
+  vignette: 'Vignette',
+  lensEffects: 'Chromatic aberration',
+  motionBlur: 'Dash motion blur',
+  softParticles: 'Soft particles',
+  distortion: 'Heat / shockwave distortion',
+  skidMarks: 'Skid marks',
+  dustMotes: 'Floating dust',
+  contactShadows: 'Contact shadows',
+};
+
+export const QUALITY_PRESETS: Readonly<Record<QualityName, Omit<GraphicsSettings, 'preset'>>> = {
   Low: {
-    name: 'Low',
     pixelRatioCap: 1,
-    shadowMapSize: 512,
+    pixelRatioScale: 0.8,
+    shadows: true,
+    shadowMapSize: 1024,
     postProcessing: false,
     bloom: false,
     ao: false,
     aoQuality: 'Performance',
     smaa: false,
+    grading: false,
+    filmGrain: false,
     vignette: false,
-    chromaticAberration: false,
-    particleMultiplier: 0.35,
-    maxDecals: 16,
+    lensEffects: false,
+    motionBlur: false,
+    softParticles: false,
+    distortion: false,
+    maxDynamicLights: 2,
+    particleDensity: 0.4,
+    maxDecals: 24,
+    skidMarks: true,
+    dustMotes: false,
+    contactShadows: true,
+    envMapSize: 64,
   },
   Medium: {
-    name: 'Medium',
     pixelRatioCap: 1.25,
+    pixelRatioScale: 1,
+    shadows: true,
     shadowMapSize: 1024,
     postProcessing: true,
     bloom: true,
     ao: false,
-    aoQuality: 'Low',
+    aoQuality: 'Performance',
     smaa: true,
+    grading: true,
+    filmGrain: false,
     vignette: true,
-    chromaticAberration: true,
-    particleMultiplier: 0.6,
-    maxDecals: 32,
+    lensEffects: true,
+    motionBlur: false,
+    softParticles: true,
+    distortion: false,
+    maxDynamicLights: 4,
+    particleDensity: 0.65,
+    maxDecals: 48,
+    skidMarks: true,
+    dustMotes: true,
+    contactShadows: true,
+    envMapSize: 128,
   },
   High: {
-    name: 'High',
     pixelRatioCap: 1.5,
+    pixelRatioScale: 1,
+    shadows: true,
     shadowMapSize: 2048,
     postProcessing: true,
     bloom: true,
     ao: true,
     aoQuality: 'Medium',
     smaa: true,
+    grading: true,
+    filmGrain: true,
     vignette: true,
-    chromaticAberration: true,
-    particleMultiplier: 1,
-    maxDecals: 64,
+    lensEffects: true,
+    motionBlur: true,
+    softParticles: true,
+    distortion: true,
+    maxDynamicLights: 6,
+    particleDensity: 1,
+    maxDecals: 96,
+    skidMarks: true,
+    dustMotes: true,
+    contactShadows: true,
+    envMapSize: 256,
   },
   Ultra: {
-    name: 'Ultra',
     pixelRatioCap: 2,
+    pixelRatioScale: 1,
+    shadows: true,
     shadowMapSize: 4096,
     postProcessing: true,
     bloom: true,
     ao: true,
     aoQuality: 'High',
     smaa: true,
+    grading: true,
+    filmGrain: true,
     vignette: true,
-    chromaticAberration: true,
-    particleMultiplier: 1.4,
-    maxDecals: 96,
+    lensEffects: true,
+    motionBlur: true,
+    softParticles: true,
+    distortion: true,
+    maxDynamicLights: 8,
+    particleDensity: 1.35,
+    maxDecals: 160,
+    skidMarks: true,
+    dustMotes: true,
+    contactShadows: true,
+    envMapSize: 256,
   },
 };
 
 export const QUALITY_ORDER: readonly QualityName[] = ['Low', 'Medium', 'High', 'Ultra'];
 
-const STORAGE_KEY = 'robot-arena.quality';
+export function settingsForPreset(name: QualityName): GraphicsSettings {
+  return { preset: name, ...QUALITY_PRESETS[name] };
+}
 
-export function loadSavedQuality(): QualityName | null {
+const STORAGE_KEY = 'robot-arena.graphics.v2';
+
+/** Restores the saved preset + per-feature overrides (null if nothing valid is stored). */
+export function loadSavedSettings(): GraphicsSettings | null {
   try {
-    const v = window.localStorage.getItem(STORAGE_KEY);
-    return v && (QUALITY_ORDER as readonly string[]).includes(v) ? (v as QualityName) : null;
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<GraphicsSettings>;
+    if (!parsed.preset || !(QUALITY_ORDER as readonly string[]).includes(parsed.preset)) return null;
+    const base = settingsForPreset(parsed.preset);
+    for (const key of Object.keys(base) as (keyof GraphicsSettings)[]) {
+      const v = parsed[key];
+      if (v !== undefined && typeof v === typeof base[key]) (base as unknown as Record<string, unknown>)[key] = v;
+    }
+    return base;
   } catch {
     return null;
   }
 }
 
-export function saveQuality(name: QualityName): void {
+export function saveSettings(s: GraphicsSettings): void {
   try {
-    window.localStorage.setItem(STORAGE_KEY, name);
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
   } catch {
-    // Storage unavailable (private mode); the preset simply won't persist.
+    // Storage unavailable (private mode); settings simply won't persist.
   }
 }
 

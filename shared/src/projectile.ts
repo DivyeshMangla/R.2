@@ -1,7 +1,7 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import type { Collider, World } from '@dimforge/rapier3d-compat';
 import { CollisionGroups } from './collisionGroups';
-import { dot, length, reflect, type Vec3 } from './math';
+import type { Vec3 } from './math';
 
 export interface ProjectileState {
   id: number;
@@ -21,10 +21,25 @@ export type ProjectileStep =
   | { kind: 'bounce'; point: Vec3; normal: Vec3 }
   | { kind: 'hit'; collider: Collider; point: Vec3; normal: Vec3 };
 
+// Results are reused between calls to keep the hot loop allocation-free.
+// Callers must consume a result before the next stepProjectile call.
+const FLY: ProjectileStep = { kind: 'fly' };
+const EXPIRE: ProjectileStep = { kind: 'expire' };
+const BOUNCE: { kind: 'bounce'; point: Vec3; normal: Vec3 } = { kind: 'bounce', point: { x: 0, y: 0, z: 0 }, normal: { x: 0, y: 0, z: 0 } };
+const HIT: { kind: 'hit'; collider: Collider; point: Vec3; normal: Vec3 } = {
+  kind: 'hit',
+  collider: null as unknown as Collider,
+  point: { x: 0, y: 0, z: 0 },
+  normal: { x: 0, y: 0, z: 0 },
+};
+let sharedRay: RAPIER.Ray | null = null;
+const rayOrigin: Vec3 = { x: 0, y: 0, z: 0 };
+const rayDir: Vec3 = { x: 0, y: 0, z: 0 };
+
 /**
  * Swept-raycast projectile integration. Moves the projectile by vel*dt,
  * bouncing off environment colliders while it has bounces left.
- * Mutates `p`. Robots are hit when `isEnvironment(collider)` is false.
+ * Mutates `p` in place. Robots are hit when `isEnvironment(collider)` is false.
  */
 export function stepProjectile(
   world: World,
@@ -34,28 +49,54 @@ export function stepProjectile(
   isEnvironment: (c: Collider) => boolean,
 ): ProjectileStep {
   p.age += dt;
-  if (p.age > p.lifetime) return { kind: 'expire' };
-  const speed = length(p.vel);
-  if (speed < 1e-4) return { kind: 'expire' };
-  const dir = { x: p.vel.x / speed, y: p.vel.y / speed, z: p.vel.z / speed };
+  if (p.age > p.lifetime) return EXPIRE;
+  const speed = Math.hypot(p.vel.x, p.vel.y, p.vel.z);
+  if (speed < 1e-4) return EXPIRE;
+  rayDir.x = p.vel.x / speed;
+  rayDir.y = p.vel.y / speed;
+  rayDir.z = p.vel.z / speed;
+  rayOrigin.x = p.pos.x;
+  rayOrigin.y = p.pos.y;
+  rayOrigin.z = p.pos.z;
   const travel = speed * dt;
-  const ray = new RAPIER.Ray(p.pos, dir);
-  const hit = world.castRayAndGetNormal(ray, travel, true, undefined, CollisionGroups.PROJECTILE_QUERY, excludeCollider);
+  if (!sharedRay) sharedRay = new RAPIER.Ray(rayOrigin, rayDir);
+  sharedRay.origin = rayOrigin;
+  sharedRay.dir = rayDir;
+  const hit = world.castRayAndGetNormal(sharedRay, travel, true, undefined, CollisionGroups.PROJECTILE_QUERY, excludeCollider);
   if (!hit) {
-    p.pos = { x: p.pos.x + dir.x * travel, y: p.pos.y + dir.y * travel, z: p.pos.z + dir.z * travel };
-    return { kind: 'fly' };
+    p.pos.x += rayDir.x * travel;
+    p.pos.y += rayDir.y * travel;
+    p.pos.z += rayDir.z * travel;
+    return FLY;
   }
-  const point = { x: p.pos.x + dir.x * hit.timeOfImpact, y: p.pos.y + dir.y * hit.timeOfImpact, z: p.pos.z + dir.z * hit.timeOfImpact };
-  let normal = { x: hit.normal.x, y: hit.normal.y, z: hit.normal.z };
-  if (dot(normal, dir) > 0) normal = { x: -normal.x, y: -normal.y, z: -normal.z };
-  if (isEnvironment(hit.collider)) {
-    if (p.bouncesLeft > 0) {
-      p.bouncesLeft -= 1;
-      p.vel = reflect(p.vel, normal);
-      p.pos = { x: point.x + normal.x * 0.05, y: point.y + normal.y * 0.05, z: point.z + normal.z * 0.05 };
-      return { kind: 'bounce', point, normal };
-    }
+  const t = hit.timeOfImpact;
+  const px = p.pos.x + rayDir.x * t;
+  const py = p.pos.y + rayDir.y * t;
+  const pz = p.pos.z + rayDir.z * t;
+  let nx = hit.normal.x, ny = hit.normal.y, nz = hit.normal.z;
+  if (nx * rayDir.x + ny * rayDir.y + nz * rayDir.z > 0) {
+    nx = -nx;
+    ny = -ny;
+    nz = -nz;
   }
-  p.pos = point;
-  return { kind: 'hit', collider: hit.collider, point, normal };
+  if (isEnvironment(hit.collider) && p.bouncesLeft > 0) {
+    p.bouncesLeft -= 1;
+    const d = 2 * (p.vel.x * nx + p.vel.y * ny + p.vel.z * nz);
+    p.vel.x -= d * nx;
+    p.vel.y -= d * ny;
+    p.vel.z -= d * nz;
+    p.pos.x = px + nx * 0.05;
+    p.pos.y = py + ny * 0.05;
+    p.pos.z = pz + nz * 0.05;
+    BOUNCE.point.x = px; BOUNCE.point.y = py; BOUNCE.point.z = pz;
+    BOUNCE.normal.x = nx; BOUNCE.normal.y = ny; BOUNCE.normal.z = nz;
+    return BOUNCE;
+  }
+  p.pos.x = px;
+  p.pos.y = py;
+  p.pos.z = pz;
+  HIT.collider = hit.collider;
+  HIT.point.x = px; HIT.point.y = py; HIT.point.z = pz;
+  HIT.normal.x = nx; HIT.normal.y = ny; HIT.normal.z = nz;
+  return HIT;
 }

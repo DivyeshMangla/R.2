@@ -1,12 +1,12 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import type { Collider, World } from '@dimforge/rapier3d-compat';
-import { ARENA_BLOCKS } from './arena';
+import { ARENA_BLOCKS, type ArenaBlockKind } from './arena';
 import { CollisionGroups } from './collisionGroups';
 import { physicsConfig } from './physicsConfig';
 
-/** Creates the static arena colliders in `world` and returns their handles. */
-export function buildArenaColliders(world: World): Set<number> {
-  const handles = new Set<number>();
+/** Creates the static arena colliders in `world`; returns collider handle -> block kind. */
+export function buildArenaColliders(world: World): Map<number, ArenaBlockKind> {
+  const handles = new Map<number, ArenaBlockKind>();
   const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
   for (const b of ARENA_BLOCKS) {
     const desc = RAPIER.ColliderDesc.cuboid(b.half.x, b.half.y, b.half.z)
@@ -16,7 +16,7 @@ export function buildArenaColliders(world: World): Set<number> {
       .setFriction(b.kind === 'barrier' || b.kind === 'cover' || b.kind === 'pillar' ? 0.15 : 0.9)
       .setRestitution(b.kind === 'barrier' ? 0.3 : 0.05);
     const c: Collider = world.createCollider(desc, body);
-    handles.add(c.handle);
+    handles.set(c.handle, b.kind);
   }
   return handles;
 }

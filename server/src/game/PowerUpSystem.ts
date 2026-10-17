@@ -52,7 +52,7 @@ export class PowerUpSystem {
     return {
       selfId: robot.id,
       stats: robot.stats,
-      heal: (amount) => this.host.heal(robot, amount),
+      heal: (amount, sourceId) => this.host.heal(robot, amount, sourceId),
       spawnMines: (position, count) => this.spawnMines(robot, position, count),
     };
   }

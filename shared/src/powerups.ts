@@ -62,7 +62,8 @@ export function baseStats(): RobotStats {
 export interface PowerUpHookContext {
   readonly selfId: number;
   readonly stats: RobotStats;
-  heal(amount: number): void;
+  /** `sourceId` is the robot the health was drained from (Leech Core), if any. */
+  heal(amount: number, sourceId?: number): void;
   spawnMines(position: Vec3, count: number): void;
 }
 
@@ -206,7 +207,7 @@ export const POWERUPS: readonly PowerUpDef[] = [
     },
     hooks: {
       onHit: (ctx, e) => {
-        ctx.heal(e.damage * ctx.stats.leechFraction);
+        ctx.heal(e.damage * ctx.stats.leechFraction, e.targetId);
       },
     },
   },

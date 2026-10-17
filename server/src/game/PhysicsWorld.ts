@@ -5,7 +5,7 @@ import { buildArenaColliders, CollisionGroups, createPhysicsWorld, syncGravity, 
 /** Authoritative Rapier world: the static arena plus every robot chassis. */
 export class PhysicsWorld {
   readonly world: World;
-  private readonly envHandles: Set<number>;
+  private readonly envHandles: ReadonlyMap<number, unknown>;
   private readonly robotByCollider = new Map<number, number>();
 
   constructor() {

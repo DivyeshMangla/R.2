@@ -106,12 +106,12 @@ export class GameSimulation implements GameHost {
     return performance.now() - this.startMs;
   }
 
-  heal(target: ServerRobot, amount: number): void {
+  heal(target: ServerRobot, amount: number, sourceId?: number): void {
     if (!target.alive || amount <= 0) return;
     const before = target.hp;
     target.hp = Math.min(target.stats.maxHp, target.hp + amount);
     const healed = target.hp - before;
-    if (healed >= 0.5) this.emit({ k: 'heal', target: target.id, amount: Math.round(healed) });
+    if (healed >= 0.5) this.emit({ k: 'heal', target: target.id, amount: Math.round(healed), ...(sourceId !== undefined ? { from: sourceId } : {}) });
   }
 
   applyDamage(target: ServerRobot, amount: number, attacker: ServerRobot | null, cause: DamageCause, point: Vec3): number {

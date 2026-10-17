@@ -57,10 +57,13 @@ export class WeaponSystem {
       }
       if (r.kind === 'expire') continue;
       if (r.kind === 'bounce') {
-        host.emit({ k: 'bounce', pid: p.id, p: r.point, v: { ...p.vel } });
+        host.emit({ k: 'bounce', pid: p.id, p: { ...r.point }, v: { ...p.vel } });
         survivors.push(p);
         continue;
       }
+      // `r` is a reused object; snapshot it before anything else can step a projectile.
+      const point = { ...r.point };
+      const normal = { ...r.normal };
       const targetId = physics.robotIdForCollider(r.collider);
       const target = targetId !== undefined ? host.robotById(targetId) : undefined;
       let dealt = 0;
@@ -68,10 +71,10 @@ export class WeaponSystem {
         const speed = Math.hypot(p.vel.x, p.vel.y, p.vel.z) || 1;
         const k = p.knockback / speed;
         const impulse = { x: p.vel.x * k, y: p.knockback * 0.18, z: p.vel.z * k };
-        if (host.combatEnabled()) target.controller.body.applyImpulseAtPoint(impulse, r.point, true);
-        dealt = host.applyDamage(target, p.damage, owner ?? null, 'projectile', r.point);
+        if (host.combatEnabled()) target.controller.body.applyImpulseAtPoint(impulse, point, true);
+        dealt = host.applyDamage(target, p.damage, owner ?? null, 'projectile', point);
       }
-      host.emit({ k: 'impact', pid: p.id, p: r.point, n: r.normal, target: target ? target.id : -1, dmg: Math.round(dealt), owner: p.owner });
+      host.emit({ k: 'impact', pid: p.id, p: point, n: normal, target: target ? target.id : -1, dmg: Math.round(dealt), owner: p.owner });
     }
     this.projectiles = survivors;
   }
