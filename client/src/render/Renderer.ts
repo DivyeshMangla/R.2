@@ -14,7 +14,7 @@ import {
   VignetteEffect,
 } from 'postprocessing';
 import { N8AOPostPass } from 'n8ao';
-import { QUALITY_PRESETS, type QualityName, type QualitySettings } from './Quality';
+import { QUALITY_PRESETS, type QualityName, type QualitySettings } from './QualityLegacy';
 
 export interface GraphicsTuning {
   exposure: number;

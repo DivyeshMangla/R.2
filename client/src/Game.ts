@@ -46,7 +46,7 @@ import { PhysicsWorld } from './physics/PhysicsWorld';
 import { buildArena, type ArenaVisuals } from './render/ArenaBuilder';
 import { CameraController } from './render/CameraController';
 import { ProjectileSystem } from './render/ProjectileSystem';
-import { loadSavedQuality, QualityAutoDetector, saveQuality, type QualityName } from './render/Quality';
+import { loadSavedQuality, QualityAutoDetector, saveQuality, type QualityName } from './render/QualityLegacy';
 import { Renderer } from './render/Renderer';
 import { RobotModelFactory } from './render/RobotModelFactory';
 import { RobotView, type WheelTelemetry } from './render/RobotView';
