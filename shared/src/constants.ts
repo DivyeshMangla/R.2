@@ -13,7 +13,7 @@ export const MAX_PLAYERS = 6;
 export const MATCH_DURATION_S = 300;
 export const RESULTS_DURATION_S = 10;
 export const RESPAWN_DELAY_S = 3;
-export const SPAWN_PROTECTION_S = 1.2;
+export const SPAWN_PROTECTION_S = 6;
 
 export const BASE_HP = 100;
 export const XP_PER_KILL = 100;

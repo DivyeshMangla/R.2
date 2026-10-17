@@ -9,14 +9,15 @@ export const MAX_FLEET = 8;
  *  row 1: accent rgb (linear), accent intensity
  *  row 2: damage 0..1 (scorch), wear seed, regen glow, aura strength
  *  row 3: barrel heat 0..1, booster glow, stun, alive
+ *  row 4: weapon rgb (linear), weapon glow intensity
  */
 export class RobotDataTexture {
   readonly texture: THREE.DataTexture;
   private readonly data: Float32Array;
 
   constructor() {
-    this.data = new Float32Array(MAX_FLEET * 4 * 4);
-    this.texture = new THREE.DataTexture(this.data, MAX_FLEET, 4, THREE.RGBAFormat, THREE.FloatType);
+    this.data = new Float32Array(MAX_FLEET * 5 * 4);
+    this.texture = new THREE.DataTexture(this.data, MAX_FLEET, 5, THREE.RGBAFormat, THREE.FloatType);
     this.texture.magFilter = THREE.NearestFilter;
     this.texture.minFilter = THREE.NearestFilter;
     this.texture.needsUpdate = true;
@@ -36,7 +37,7 @@ export class RobotDataTexture {
   }
 }
 
-export type RobotMaterialKind = 'paint' | 'steel' | 'barrel' | 'accent' | 'number';
+export type RobotMaterialKind = 'paint' | 'canvas' | 'steel' | 'barrel' | 'accent' | 'weapon' | 'number';
 
 interface PatchOptions {
   kind: RobotMaterialKind;
@@ -66,15 +67,16 @@ function patch(material: THREE.MeshStandardMaterial, data: RobotDataTexture, opt
     uInstPerRobot: { value: opts.instancesPerRobot },
     uRobotIndex: { value: opts.robotIndex },
     uWornColor: { value: new THREE.Color(0.62, 0.6, 0.57) },
-    uWearAmount: { value: 1.0 },
+    uWearAmount: { value: opts.kind === 'canvas' ? 0.12 : 1.0 },
     uWearScale: { value: 1.2 },
   };
   material.userData.robotUniforms = uniforms;
   const defines: Record<string, string> = { ROBOT_DATA: '' };
-  if (opts.kind === 'paint') defines.ROBOT_PAINT = '';
-  if (opts.kind === 'paint' || opts.kind === 'steel' || opts.kind === 'barrel') defines.ROBOT_SCORCH = '';
+  if (opts.kind === 'paint' || opts.kind === 'canvas') defines.ROBOT_PAINT = '';
+  if (opts.kind === 'paint' || opts.kind === 'canvas' || opts.kind === 'steel' || opts.kind === 'barrel') defines.ROBOT_SCORCH = '';
   if (opts.kind === 'barrel') defines.ROBOT_HEAT = '';
   if (opts.kind === 'accent') defines.ROBOT_ACCENT = '';
+  if (opts.kind === 'weapon') defines.ROBOT_WEAPON = '';
   if (opts.kind === 'number') defines.ROBOT_NUMBER = '';
   material.defines = { ...(material.defines ?? {}), ...defines };
 
@@ -91,6 +93,7 @@ function patch(material: THREE.MeshStandardMaterial, data: RobotDataTexture, opt
         flat varying vec4 vR1;
         flat varying vec4 vR2;
         flat varying vec4 vR3;
+        flat varying vec4 vR4;
         varying vec3 vObjPos;`,
       )
       .replace(
@@ -102,6 +105,7 @@ function patch(material: THREE.MeshStandardMaterial, data: RobotDataTexture, opt
         vR1 = texelFetch(uRobotData, ivec2(rc.x, 1), 0);
         vR2 = texelFetch(uRobotData, ivec2(rc.x, 2), 0);
         vR3 = texelFetch(uRobotData, ivec2(rc.x, 3), 0);
+        vR4 = texelFetch(uRobotData, ivec2(rc.x, 4), 0);
         vObjPos = position;
         #include <uv_vertex>
         #ifdef ROBOT_NUMBER
@@ -117,6 +121,7 @@ function patch(material: THREE.MeshStandardMaterial, data: RobotDataTexture, opt
         flat varying vec4 vR1;
         flat varying vec4 vR2;
         flat varying vec4 vR3;
+        flat varying vec4 vR4;
         varying vec3 vObjPos;
         uniform vec3 uWornColor;
         uniform float uWearAmount;
@@ -131,7 +136,11 @@ function patch(material: THREE.MeshStandardMaterial, data: RobotDataTexture, opt
         float n1 = ra_noise(vObjPos * 5.0 + vR2.y * 17.0);
         #ifdef ROBOT_PAINT
           diffuseColor.rgb *= vR0.rgb;
-          vec3 gN = normalize(vNormal);
+          #ifdef FLAT_SHADED
+            vec3 gN = normalize(cross(dFdx(vViewPosition), dFdy(vViewPosition)));
+          #else
+            vec3 gN = normalize(vNormal);
+          #endif
           float curv = length(fwidth(gN)) / max(length(fwidth(vViewPosition)), 1e-4);
           float n2 = ra_noise(vObjPos * 23.0 + 3.1);
           wear = smoothstep(0.62, 1.0, clamp(curv * uWearScale * 0.08, 0.0, 1.4) + (n1 - 0.5) * 0.65 + (n2 - 0.5) * 0.3) * uWearAmount;
@@ -148,13 +157,13 @@ function patch(material: THREE.MeshStandardMaterial, data: RobotDataTexture, opt
       .replace(
         '#include <roughnessmap_fragment>',
         /* glsl */ `#include <roughnessmap_fragment>
-        roughnessFactor = mix(roughnessFactor, 0.26, wear);
+        roughnessFactor = mix(roughnessFactor, 0.78, wear);
         roughnessFactor = mix(roughnessFactor, 0.95, scorch);`,
       )
       .replace(
         '#include <metalnessmap_fragment>',
         /* glsl */ `#include <metalnessmap_fragment>
-        metalnessFactor = mix(metalnessFactor, 1.0, wear);
+        metalnessFactor = mix(metalnessFactor, 0.15, wear);
         metalnessFactor = mix(metalnessFactor, 0.15, scorch);`,
       )
       .replace(
@@ -167,11 +176,18 @@ function patch(material: THREE.MeshStandardMaterial, data: RobotDataTexture, opt
         #ifdef ROBOT_ACCENT
           totalEmissiveRadiance = vR1.rgb * vR1.a;
         #endif
+        #ifdef ROBOT_WEAPON
+          totalEmissiveRadiance = vR4.rgb * vR4.a;
+        #endif
         #ifdef ROBOT_HEAT
           float heatMask = smoothstep(0.15, 1.25, vObjPos.z);
           totalEmissiveRadiance += vec3(1.0, 0.32, 0.06) * pow(vR3.x, 1.6) * heatMask * 5.0;
         #endif`,
-      );
+      )
+      .replace('#include <opaque_fragment>', `
+        // Deliberate ink-and-paint bands replace polished continuous highlights.
+        outgoingLight = floor(max(outgoingLight, vec3(0.0)) * 6.0 + 0.5) / 6.0;
+        #include <opaque_fragment>`);
   };
   material.customProgramCacheKey = () => `robot-${opts.kind}-${opts.robotIndex >= 0 ? 'fixed' : 'inst'}`;
 }
@@ -197,37 +213,39 @@ export interface RobotMaterialSet {
 
 function baseMaterial(kind: RobotMaterialKind, maps: RobotSurfaceMaps, numbers: NumberAtlas): THREE.MeshStandardMaterial {
   switch (kind) {
+    case 'canvas':
+      return new THREE.MeshStandardMaterial({ color: 0xffffff, map: maps.detail, roughness: 1, metalness: 0, flatShading: true });
     case 'paint':
-      return new THREE.MeshPhysicalMaterial({
+      return new THREE.MeshStandardMaterial({
         color: 0xffffff,
         map: maps.detail,
         roughnessMap: maps.roughness,
-        normalMap: maps.normal,
-        normalScale: new THREE.Vector2(0.7, 0.7),
+        flatShading: true,
         roughness: 1.0,
-        metalness: 0.45,
-        clearcoat: 0.55,
-        clearcoatRoughness: 0.3,
+        metalness: 0.03,
       });
     case 'steel':
       return new THREE.MeshStandardMaterial({
         color: 0x3a3f47,
         map: maps.steelDetail,
         roughnessMap: maps.steelRoughness,
-        normalMap: maps.steelNormal,
-        roughness: 0.75,
-        metalness: 0.85,
+        flatShading: true,
+        roughness: 0.95,
+        metalness: 0.08,
       });
     case 'barrel':
       return new THREE.MeshStandardMaterial({
         color: 0x2c3036,
         map: maps.steelDetail,
         roughnessMap: maps.steelRoughness,
-        roughness: 0.55,
-        metalness: 0.9,
+        flatShading: true,
+        roughness: 0.9,
+        metalness: 0.06,
       });
     case 'accent':
-      return new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffff, roughness: 0.35, metalness: 0.1 });
+      return new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffff, roughness: 1, metalness: 0 });
+    case 'weapon':
+      return new THREE.MeshStandardMaterial({ color: 0x10151a, emissive: 0xffffff, roughness: 1, metalness: 0 });
     case 'number':
       return new THREE.MeshStandardMaterial({
         map: numbers.texture,
@@ -265,10 +283,10 @@ export function createRobotMaterials(data: RobotDataTexture, maps: RobotSurfaceM
       m.transparent = true;
       return m;
     },
-    chrome: new THREE.MeshStandardMaterial({ color: 0xd4dbe3, roughness: 0.16, metalness: 1.0 }),
+    chrome: new THREE.MeshStandardMaterial({ color: 0xb8c3c5, roughness: 0.85, metalness: 0.12, flatShading: true }),
     rubber: new THREE.MeshStandardMaterial({ color: 0xffffff, map: maps.rubber, normalMap: maps.rubberNormal, roughness: 0.93, metalness: 0.0 }),
-    rim: new THREE.MeshStandardMaterial({ color: 0x8c949e, map: maps.steelDetail, roughness: 0.32, metalness: 1.0 }),
-    glass: new THREE.MeshPhysicalMaterial({ color: 0x06121c, roughness: 0.04, metalness: 0.1, clearcoat: 1, clearcoatRoughness: 0.02 }),
+    rim: new THREE.MeshStandardMaterial({ color: 0x8c949e, map: maps.steelDetail, roughness: 0.9, metalness: 0.1, flatShading: true }),
+    glass: new THREE.MeshPhysicalMaterial({ color: 0x223d48, roughness: 0.8, metalness: 0, clearcoat: 0 }),
     lamps: new THREE.MeshBasicMaterial({ vertexColors: true, color: hdr(5, 5, 5), toneMapped: true }),
     emp: new THREE.MeshBasicMaterial({ color: hdr(0.6, 1.8, 6) }),
     leech: new THREE.MeshBasicMaterial({ color: hdr(6, 0.3, 0.8) }),

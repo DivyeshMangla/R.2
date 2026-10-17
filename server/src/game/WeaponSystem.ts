@@ -1,7 +1,7 @@
 import {
   castHitTargets,
   clampAimPitch,
-  computeShots,
+  computeWeaponShots,
   createEnvCaster,
   FIXED_DT,
   getTurretPivot,
@@ -15,6 +15,7 @@ import {
   physicsConfig,
   StepKind,
   stepProjectile,
+  weaponStats,
   type HitTarget,
   type ProjectileState,
   type ProjectileWorld,
@@ -87,7 +88,8 @@ export class WeaponSystem {
   }
 
   fireIntervalFor(robot: ServerRobot): number {
-    return physicsConfig.fireInterval / robot.stats.fireRateMul;
+    if (robot.weaponId === null) return 0;
+    return weaponStats(robot.weaponId).interval / robot.stats.fireRateMul;
   }
 
   /** Called once per simulation tick before inputs are processed. */
@@ -96,8 +98,9 @@ export class WeaponSystem {
   }
 
   tryFire(robot: ServerRobot, req: FireRequest): boolean {
-    if (robot.fireCooldown > 0 || !robot.alive) return false;
+    if (robot.weaponId === null || robot.fireCooldown > 0 || !robot.alive) return false;
     const cfg = physicsConfig;
+    const weapon = weaponStats(robot.weaponId);
     robot.fireCooldown = this.fireIntervalFor(robot);
     const human = !robot.isBot;
     const latest = this.lag.latestTime();
@@ -107,10 +110,10 @@ export class WeaponSystem {
     const body = robot.controller.body;
     const p = body.translation();
     const q = body.rotation();
-    const shots = computeShots(p, q, req.aimYaw, pitch, robot.stats.projectileCount, robot.id, req.seq);
+    const shots = computeWeaponShots(p, q, req.aimYaw, pitch, robot.stats.projectileCount, robot.id, req.seq, robot.weaponId);
     const pivot = getTurretPivot(p, q, { x: 0, y: 0, z: 0 });
-    const damage = cfg.projectileDamage * robot.stats.damageMul;
-    const knockback = cfg.projectileImpulse * robot.stats.knockbackMul;
+    const damage = weapon.damage * robot.stats.damageMul;
+    const knockback = weapon.knockback * robot.stats.knockbackMul;
     // The hitscan assist spends rewind: a shell fast-forwarded by ff is tested at t0 + age either way.
     const ff = human ? Math.min(cfg.hitscanAssistMs, rewindMs) / 1000 : 0;
 
@@ -120,13 +123,13 @@ export class WeaponSystem {
           id: this.nextId++,
           owner: robot.id,
           pos: { ...pivot },
-          vel: { x: s.dir.x * cfg.projectileSpeed, y: s.dir.y * cfg.projectileSpeed, z: s.dir.z * cfg.projectileSpeed },
+          vel: { x: s.dir.x * weapon.speed, y: s.dir.y * weapon.speed, z: s.dir.z * weapon.speed },
           bouncesLeft: robot.stats.ricochetBounces,
           age: 0,
-          lifetime: cfg.projectileLifetime,
+          lifetime: weapon.lifetime,
           damage,
           knockback,
-          radius: cfg.projectileRadius,
+          radius: weapon.radius,
           assist: human,
           dist: 0,
         },
@@ -148,7 +151,7 @@ export class WeaponSystem {
       shell.state.pos = { ...s.origin };
       this.host.emit({
         k: 'shot', pid: shell.state.id, owner: robot.id, p: { ...s.origin }, v: { ...shell.state.vel },
-        bounces: shell.state.bouncesLeft, seq: req.seq, b: s.barrel, ff,
+        bounces: shell.state.bouncesLeft, seq: req.seq, b: s.barrel, ff, weaponId: robot.weaponId, lifetime: weapon.lifetime,
       });
       let alive = true;
       let left = ff;

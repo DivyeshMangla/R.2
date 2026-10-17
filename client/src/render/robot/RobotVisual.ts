@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { physicsConfig, RobotFlags, WHEEL_ANCHORS, type PowerUpStacks } from '@robot-arena/shared';
+import { physicsConfig, RobotFlags, WHEEL_ANCHORS, type CharacterId, type MapBiome, type PowerUpStacks, type WeaponId } from '@robot-arena/shared';
 
 export interface WheelTelemetry {
   suspension: number[];
@@ -21,6 +21,9 @@ export class RobotVisual {
   readonly id: number;
   readonly slot: number;
   color: number;
+  characterId: CharacterId = 'striker';
+  weaponId: WeaponId | null = null;
+  biome: MapBiome = 'volcanic';
   level = 1;
   stacks: PowerUpStacks = {};
   stacksKey = '';

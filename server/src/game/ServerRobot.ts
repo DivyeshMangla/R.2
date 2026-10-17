@@ -2,9 +2,11 @@ import {
   BASE_HP,
   computeStats,
   emptyInput,
+  getCharacter,
   RobotController,
   RobotFlags,
   xpToNext,
+  type CharacterId,
   type InputFrame,
   type PlayerInfo,
   type PowerUpId,
@@ -12,6 +14,7 @@ import {
   type RobotNetState,
   type RobotStats,
   type Vec3,
+  type WeaponId,
 } from '@robot-arena/shared';
 import type { BotAI } from './BotAI';
 
@@ -27,6 +30,8 @@ export class ServerRobot {
   readonly color: number;
   readonly sessionId: string | null;
   readonly controller: RobotController;
+  readonly characterId: CharacterId;
+  weaponId: WeaponId | null = null;
   bot: BotAI | null = null;
 
   hp = BASE_HP;
@@ -59,12 +64,14 @@ export class ServerRobot {
   pendingOffers = 0;
   activeOffer: ActiveOffer | null = null;
 
-  constructor(id: number, name: string, color: number, sessionId: string | null, controller: RobotController) {
+  constructor(id: number, name: string, color: number, sessionId: string | null, controller: RobotController, characterId: unknown = 'striker', _legacyWeaponId?: unknown) {
     this.id = id;
     this.name = name;
     this.color = color;
     this.sessionId = sessionId;
     this.controller = controller;
+    const character = getCharacter(characterId);
+    this.characterId = character.id;
   }
 
   get isBot(): boolean {
@@ -106,6 +113,7 @@ export class ServerRobot {
     this.recomputeStats();
     this.hp = this.stats.maxHp;
     this.damageLog.clear();
+    this.weaponId = null;
   }
 
   toNetState(): RobotNetState {
@@ -136,6 +144,7 @@ export class ServerRobot {
       spawnCount: this.spawnCount,
       fireCooldown: this.fireCooldown,
       aimPitch: this.aimPitch,
+      steeringAngle: this.controller.sim.steeringAngle,
     };
   }
 
@@ -151,6 +160,8 @@ export class ServerRobot {
       xp: this.xp,
       xpToNext: xpToNext(this.level),
       stacks: { ...this.stacks },
+      characterId: this.characterId,
+      weaponId: this.weaponId,
     };
   }
 }

@@ -9,6 +9,7 @@ import {
   physicsConfig,
   syncGravity,
   type Quat,
+  type MapId,
   type Vec3,
 } from '@robot-arena/shared';
 import type { DebrisPiece } from '../render/robot/RobotFleet';
@@ -54,12 +55,12 @@ export class DebrisSystem {
   private readonly away = new THREE.Vector3();
   private readonly bouncePos = new THREE.Vector3();
 
-  constructor(scene: THREE.Scene, vfx: VFXSystem, onBounce: DebrisBounceHandler) {
+  constructor(scene: THREE.Scene, vfx: VFXSystem, onBounce: DebrisBounceHandler, mapId: MapId = 'foundry') {
     this.scene = scene;
     this.vfx = vfx;
     this.onBounce = onBounce;
     this.world = createPhysicsWorld();
-    buildArenaColliders(this.world);
+    buildArenaColliders(this.world, mapId);
   }
 
   spawn(pieces: DebrisPiece[], p: Vec3, q: Quat, v: Vec3): void {

@@ -22,6 +22,8 @@ export interface PhysicsConfig {
   rollingBrake: number;
   maxSteerAngle: number;
   steerSpeedFalloff: number;
+  /** Steering response rate (1/s), shared by simulation and prediction. */
+  steerResponse: number;
   downforce: number;
 
   // Suspension & tyres
@@ -118,13 +120,14 @@ export const DEFAULT_PHYSICS_CONFIG: Readonly<PhysicsConfig> = Object.freeze({
   chassisFriction: 0.4,
   chassisRestitution: 0.15,
 
-  engineForce: 5200,
-  reverseFactor: 0.65,
-  maxSpeed: 21,
+  engineForce: 3000,
+  reverseFactor: 0.6,
+  maxSpeed: 12,
   brakeForce: 24,
-  rollingBrake: 1.6,
-  maxSteerAngle: 0.55,
-  steerSpeedFalloff: 0.045,
+  rollingBrake: 3.2,
+  maxSteerAngle: 0.45,
+  steerSpeedFalloff: 0.1,
+  steerResponse: 10,
   downforce: 0.35,
 
   suspensionRestLength: 0.32,
@@ -137,11 +140,11 @@ export const DEFAULT_PHYSICS_CONFIG: Readonly<PhysicsConfig> = Object.freeze({
   frictionSlip: 2.6,
   sideFrictionStiffness: 1.0,
 
-  boostForceMul: 1.75,
-  boostMaxSpeedMul: 1.4,
+  boostForceMul: 1.4,
+  boostMaxSpeedMul: 1.25,
   boostDrainPerSec: 38,
   boostRegenPerSec: 16,
-  dashImpulse: 11,
+  dashImpulse: 7,
   dashCooldown: 6,
 
   antiFlipDelay: 1.5,
@@ -214,6 +217,7 @@ export const PHYSICS_CONFIG_RANGES: Readonly<Record<PhysicsConfigKey, readonly [
   rollingBrake: [0, 20, 0.1],
   maxSteerAngle: [0.1, 1.0, 0.01],
   steerSpeedFalloff: [0, 0.3, 0.005],
+  steerResponse: [2, 30, 0.5],
   downforce: [0, 3, 0.01],
   suspensionRestLength: [0.05, 0.8, 0.01],
   suspensionStiffness: [5, 120, 0.5],

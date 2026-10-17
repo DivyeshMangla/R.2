@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
-import { CHASSIS_HALF, physicsConfig, RobotFlags, TWIN_BARREL_OFFSET, WHEEL_ANCHORS, type PowerUpStacks, type Vec3 } from '@robot-arena/shared';
+import { CHASSIS_HALF, getCharacter, getMap, getWeapon, physicsConfig, RobotFlags, TWIN_BARREL_OFFSET, WHEEL_ANCHORS, type MapId, type PowerUpStacks, type Vec3 } from '@robot-arena/shared';
 import {
   BARREL_MOUNT,
   BARREL_TIP_Z,
@@ -14,6 +14,7 @@ import {
 import { createRobotMaterials, MAX_FLEET, RobotDataTexture, type RobotMaterialSet } from './RobotMaterials';
 import { createRobotSurfaceMaps, NumberAtlas } from './RobotTextures';
 import { RobotVisual } from './RobotVisual';
+import { RobotInk } from './RobotInk';
 
 export interface DebrisPiece {
   object: THREE.Object3D;
@@ -45,7 +46,6 @@ const ZERO = new THREE.Matrix4().makeScale(0, 0, 0);
 const X_AXIS = new THREE.Vector3(1, 0, 0);
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
 const LEAN_PIVOT = new THREE.Vector3(0, -0.25, 0);
-const GRAY = new THREE.Color(0x30343c);
 const WHITE = new THREE.Color(1, 1, 1);
 const STUN = new THREE.Color(0.35, 0.75, 1.8);
 
@@ -95,6 +95,8 @@ export class RobotFleet {
   private readonly aura: THREE.InstancedMesh;
   private readonly auraMaterial: THREE.ShaderMaterial;
   private readonly group = new THREE.Group();
+  private readonly ink: RobotInk;
+  private mapTheme = getMap('foundry');
 
   constructor(scene: THREE.Scene, anisotropy: number) {
     this.group.name = 'RobotFleet';
@@ -117,6 +119,8 @@ export class RobotFleet {
       this.group.add(mesh);
       this.parts.push({ def, mesh, perRobot });
     }
+    this.ink = new RobotInk(this.parts.map((part) => ({ geometry: part.def.geometry, perRobot: part.perRobot })), MAX_FLEET);
+    this.group.add(this.ink.lines);
 
     for (let i = 0; i < MAX_FLEET; i++) {
       this.matrices.push({
@@ -194,15 +198,34 @@ export class RobotFleet {
     this.aura.frustumCulled = false;
     this.aura.count = 0;
     this.group.add(this.aura);
+    this.setMapTheme('foundry');
+  }
+
+  /** Shared expedition paint, fittings and metal finish for this arena. */
+  setMapTheme(mapId: MapId): void {
+    this.mapTheme = getMap(mapId);
+    const { palette, biome } = this.mapTheme;
+    for (const visual of this.visuals.values()) visual.biome = biome;
+    this.materials.chrome.color.setHex(biome === 'ancient' ? 0xb38a4b : palette.stone).lerp(_c.setHex(0xe2dfd1), 0.42);
+    this.materials.chrome.roughness = biome === 'desert' || biome === 'forest' ? 0.52 : 0.28;
+    this.materials.rim.color.setHex(palette.robotPaint).lerp(_c.setHex(0xb4afa1), 0.52);
+    this.materials.glass.color.setHex(palette.robotAccent).multiplyScalar(0.18);
+    for (const part of this.parts) {
+      if (part.def.material !== 'steel' && part.def.material !== 'barrel') continue;
+      const material = part.mesh.material as THREE.MeshStandardMaterial;
+      material.color.setHex(palette.stone).lerp(_c.setHex(0x383b3c), 0.58);
+    }
   }
 
   private materialFor(key: PartMaterial, perRobot: number): THREE.Material {
     const m = this.materials;
     switch (key) {
       case 'paint':
+      case 'canvas':
       case 'steel':
       case 'barrel':
       case 'accent':
+      case 'weapon':
       case 'number':
         return m.get(key, perRobot);
       case 'chrome':
@@ -237,6 +260,7 @@ export class RobotFleet {
     let slot = this.slots.indexOf(null);
     if (slot < 0) slot = MAX_FLEET - 1;
     const v = new RobotVisual(id, slot, color);
+    v.biome = this.mapTheme.biome;
     this.slots[slot] = v;
     this.visuals.set(id, v);
     this.materials.numbers.setNumber(slot, id);
@@ -360,14 +384,18 @@ export class RobotFleet {
       if (v && v.visible) this.computeSlot(v);
     }
 
-    for (const p of this.parts) {
+    for (const [partIndex, p] of this.parts.entries()) {
+      const inkOffset = this.ink.offsets[partIndex];
       p.mesh.count = slotCount * p.perRobot;
       let any = false;
       for (let s = 0; s < slotCount; s++) {
         const v = this.slots[s];
         const show = !!v && v.visible && addonVisible(p.def.addon, v.stacks) && this.variantVisible(p.def, v);
         if (!show || !v) {
-          for (let k = 0; k < p.perRobot; k++) p.mesh.setMatrixAt(s * p.perRobot + k, ZERO);
+          for (let k = 0; k < p.perRobot; k++) {
+            p.mesh.setMatrixAt(s * p.perRobot + k, ZERO);
+            this.ink.set(s, inkOffset + k, ZERO);
+          }
           continue;
         }
         any = true;
@@ -377,20 +405,24 @@ export class RobotFleet {
           const idx = s * p.perRobot + k;
           if (p.def.addon === 'plates' && k >= plates) {
             p.mesh.setMatrixAt(idx, ZERO);
+            this.ink.set(s, inkOffset + k, ZERO);
             continue;
           }
           const base = this.slotMatrix(p.def, mats, k);
           if (p.def.locals) {
             _m.multiplyMatrices(base, p.def.locals[k]);
             p.mesh.setMatrixAt(idx, _m);
+            this.ink.set(s, inkOffset + k, _m);
           } else {
             p.mesh.setMatrixAt(idx, base);
+            this.ink.set(s, inkOffset + k, base);
           }
         }
       }
       p.mesh.visible = any;
       p.mesh.instanceMatrix.needsUpdate = true;
     }
+    this.ink.commit(slotCount);
 
     // Robot data texture + blobs + aura.
     this.blobs.count = slotCount;
@@ -438,6 +470,10 @@ export class RobotFleet {
   }
 
   private variantVisible(def: PartDef, v: RobotVisual): boolean {
+    if (v.weaponId === null && (def.slot === 'barrel' || def.weapon)) return false;
+    if (def.biome && def.biome !== v.biome) return false;
+    if (def.character && def.character !== v.characterId) return false;
+    if (def.weapon && def.weapon !== v.weaponId) return false;
     if (!def.variant) return true;
     const twin = (v.stacks.twin_barrel ?? 0) > 0;
     return def.variant === 'twin' ? twin : !twin;
@@ -446,14 +482,15 @@ export class RobotFleet {
   private writeData(v: RobotVisual, time: number): void {
     const data = this.materials.data;
     const s = v.slot;
-    _c.setHex(v.color).lerp(GRAY, 0.38);
+    _c.setHex(v.color).lerp(_c2.setHex(this.mapTheme.palette.robotPaint), 0.24);
     data.set(s, 0, _c.r, _c.g, _c.b, v.hitFlash);
 
     const stunned = (v.flags & RobotFlags.STUNNED) !== 0;
     const boosting = (v.flags & RobotFlags.BOOSTING) !== 0;
     // Accent hue drifts and whitens with level.
-    _c2.setHex(v.color).offsetHSL((v.level - 1) * 0.012, 0.05, 0).lerp(WHITE, (v.level - 1) * 0.035);
-    let intensity = 2.0 + v.level * 0.55 + (boosting ? 2.2 : 0) + Math.sin(time * 3 + v.id) * 0.25;
+    _c2.setHex(this.mapTheme.palette.robotAccent).lerp(_c.setHex(getCharacter(v.characterId).accent), 0.3)
+      .offsetHSL((v.level - 1) * 0.006, 0, 0).lerp(WHITE, (v.level - 1) * 0.025);
+    let intensity = 0.5 + v.level * 0.1 + (boosting ? 0.7 : 0) + Math.sin(time * 3 + v.id) * 0.05;
     if (v.damageTier === 2) {
       // Failing power: irregular flicker.
       const f = Math.sin(time * 37 + v.flickerPhase) * Math.sin(time * 13.3 + v.flickerPhase * 2);
@@ -470,14 +507,18 @@ export class RobotFleet {
     const regen = (v.stacks.field_repair ?? 0) > 0 && v.sinceDamaged > 4 && frac < 1 ? 1 : 0;
     data.set(s, 2, damage, v.wearSeed, regen, v.aura);
     data.set(s, 3, v.heat, v.boosterGlow, stunned ? 1 : 0, v.visible ? 1 : 0);
+    _c.setHex(v.weaponId === null ? 0 : getWeapon(v.weaponId).color);
+    data.set(s, 4, _c.r, _c.g, _c.b, v.weaponId === null ? 0 : 1.1 + v.heat * 0.7);
   }
 
   // ------------------------------------------------------------ queries for VFX
 
-  /** World-space muzzle tip for barrel `index` (0 or 1 when twin). */
+  /** World-space muzzle tip for a projectile's barrel key (scatter pellets share one muzzle). */
   muzzleWorld(v: RobotVisual, index: number, out: THREE.Vector3): THREE.Vector3 {
     const twin = (v.stacks.twin_barrel ?? 0) > 0;
-    const x = twin ? (index === 0 ? -TWIN_BARREL_OFFSET : TWIN_BARREL_OFFSET) : 0;
+    if (v.weaponId === null) return out.copy(v.position);
+    const barrel = Math.floor(index / getWeapon(v.weaponId).pellets);
+    const x = twin ? (barrel === 0 ? -TWIN_BARREL_OFFSET : TWIN_BARREL_OFFSET) : 0;
     return out.set(x, 0, BARREL_TIP_Z).applyMatrix4(this.matrices[v.slot].barrel);
   }
 
@@ -517,7 +558,7 @@ export class RobotFleet {
     const turretPaint = this.partByName.get('turret.paint');
     if (turretPaint) chunk(turretPaint.geometry, paintMat(), { x: 0.48, y: 0.24, z: 0.48 }, new THREE.Vector3(0, TURRET_MOUNT.y, 0));
     const barrel = this.partByName.get('barrel.single.steel');
-    if (barrel) chunk(barrel.geometry, steelMat(), { x: 0.12, y: 0.12, z: 0.65 }, new THREE.Vector3(0, TURRET_MOUNT.y + BARREL_MOUNT.y, 0.4));
+    if (barrel && v.weaponId !== null) chunk(barrel.geometry, steelMat(), { x: 0.12, y: 0.12, z: 0.65 }, new THREE.Vector3(0, TURRET_MOUNT.y + BARREL_MOUNT.y, 0.4));
     // Loose wheels: tyre only (one draw call each; the rim is hidden inside it at a distance).
     const tire = this.partByName.get('wheel.tire');
     if (tire) {

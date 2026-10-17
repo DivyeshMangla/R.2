@@ -234,6 +234,17 @@ export function createRobotSurfaceMaps(anisotropy: number): RobotSurfaceMaps {
   rb.font = 'bold 18px sans-serif';
   rb.fillText('GRIPMASTER 380', 40, 128);
 
+  // Uneven pen hatching and broken construction strokes make the paint read as a drawing.
+  for (const [context, dimension] of [[d, size], [sd, 256]] as const) {
+    context.strokeStyle = 'rgba(38,31,29,0.19)';
+    context.lineWidth = 1.2;
+    for (let i = 0; i < 95; i++) {
+      const x = r() * dimension, y = r() * dimension, length = 6 + r() * 19;
+      context.beginPath(); context.moveTo(x, y); context.lineTo(x + length, y - length * 0.55 + r() * 2); context.stroke();
+      if (i % 4 === 0) { context.beginPath(); context.moveTo(x + 2, y + 4); context.lineTo(x + length + 2, y - length * 0.55 + 4); context.stroke(); }
+    }
+  }
+
   return {
     detail: tex(dc, true, anisotropy),
     roughness: tex(rc, false, anisotropy),

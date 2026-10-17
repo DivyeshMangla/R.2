@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "tsx watch --clear-screen=false src/index.ts",
     "start": "tsx src/index.ts",
-    "test:aim": "tsx src/test/aimHarness.ts"
+    "test:aim": "tsx src/test/aimHarness.ts",
+    "test:driving": "tsx src/test/drivingHarness.ts",
+    "test:lobby": "tsx src/test/lobbyHarness.ts",
+    "test:network": "tsx src/test/networkHarness.ts"
   },
   "dependencies": {
     "@colyseus/core": "^0.18.0",

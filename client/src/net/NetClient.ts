@@ -17,6 +17,7 @@ import {
   type TuneMsg,
   type InputWire,
   type WelcomeMsg,
+  type LobbySelection,
 } from '@robot-arena/shared';
 
 /** Artificial network conditions for testing (applied on this client only, both directions). */
@@ -63,10 +64,10 @@ export class NetClient {
     return this.room !== null;
   }
 
-  async connect(name: string): Promise<void> {
+  async connect(selection: LobbySelection): Promise<void> {
     const endpoint = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.hostname}:${SERVER_PORT}`;
     const client = new Client(endpoint);
-    const room = await client.joinOrCreate(ROOM_NAME, { name });
+    const room = await client.joinOrCreate(ROOM_NAME, selection);
     this.room = room;
     const h = this.handlers;
     room.onMessage(Msg.WELCOME, (m: WelcomeMsg) => this.delayed(() => {

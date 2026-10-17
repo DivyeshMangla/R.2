@@ -14,7 +14,7 @@ export interface SpawnPoint {
   yaw: number;
 }
 
-export const ARENA_HALF_SIZE = 40;
+export const ARENA_HALF_SIZE = 100;
 export const PLATFORM_HALF = 7;
 export const PLATFORM_HEIGHT = 1.5;
 export const BARRIER_HEIGHT = 2.2;
@@ -82,7 +82,7 @@ function buildArena(): ArenaBlock[] {
   blocks.push(box('cover', 27, 0.6, -27, 4, 0.6, 0.4, -Math.PI / 4));
   blocks.push(box('cover', -27, 0.6, -27, 4, 0.6, 0.4, Math.PI / 4));
 
-  // Lane walls near the barriers.
+  // Lane walls around the original central district.
   blocks.push(box('cover', 0, 0.6, 31, 5, 0.6, 0.4));
   blocks.push(box('cover', 0, 0.6, -31, 5, 0.6, 0.4));
   blocks.push(box('cover', 31, 0.6, 0, 5, 0.6, 0.4, Math.PI / 2));
@@ -105,7 +105,7 @@ export const ARENA_BLOCKS: readonly ArenaBlock[] = buildArena();
 
 function buildSpawns(): SpawnPoint[] {
   const out: SpawnPoint[] = [];
-  const r = 33;
+  const r = 82;
   for (let i = 0; i < 8; i++) {
     const a = Math.PI / 8 + (i * Math.PI) / 4;
     const x = Math.sin(a) * r;

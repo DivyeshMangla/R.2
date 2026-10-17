@@ -1,7 +1,7 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import type { Collider, DynamicRayCastVehicleController, RigidBody, World } from '@dimforge/rapier3d-compat';
 import { CollisionGroups } from './collisionGroups';
-import { cross, dot, length, normalize, quatFromYaw, rotateVec, type Quat, type Vec3 } from './math';
+import { clamp, cross, dot, length, normalize, quatFromYaw, rotateVec, type Quat, type Vec3 } from './math';
 import { physicsConfig } from './physicsConfig';
 
 /** Half extents of the chassis collision box. Forward is local +Z. */
@@ -36,6 +36,7 @@ export interface RobotSimState {
   dashCooldown: number;
   flipTimer: number;
   boosting: boolean;
+  steeringAngle: number;
 }
 
 export interface RobotPhysState {
@@ -71,7 +72,7 @@ export class RobotController {
   readonly body: RigidBody;
   readonly collider: Collider;
   readonly vehicle: DynamicRayCastVehicleController;
-  readonly sim: RobotSimState = { boostEnergy: 100, dashCooldown: 0, flipTimer: 0, boosting: false };
+  readonly sim: RobotSimState = { boostEnergy: 100, dashCooldown: 0, flipTimer: 0, boosting: false, steeringAngle: 0 };
   modifiers: RobotModifiers = { speedMul: 1, engineMul: 1, gripMul: 1, hasDash: false };
 
   private readonly world: World;
@@ -169,10 +170,12 @@ export class RobotController {
     }
 
     const maxSpeed = cfg.maxSpeed * mods.speedMul * (sim.boosting ? cfg.boostMaxSpeedMul : 1);
+    const driveLimit = maxSpeed * (throttle < 0 ? 0.5 : 1);
+    const speedAlongInput = forwardSpeed * Math.sign(throttle);
     let engine = (throttle * cfg.engineForce * mods.engineMul * (sim.boosting ? cfg.boostForceMul : 1)) / 4;
     if (throttle < 0) engine *= cfg.reverseFactor;
-    if (throttle > 0 && forwardSpeed > maxSpeed) engine = 0;
-    if (throttle < 0 && forwardSpeed < -maxSpeed * 0.5) engine = 0;
+    // Ease off over the final 20% instead of alternating full power and zero at the limit.
+    engine *= clamp((driveLimit - speedAlongInput) / (driveLimit * 0.2), 0, 1);
 
     let brake = 0;
     if (throttle * forwardSpeed < 0 && Math.abs(forwardSpeed) > 1.0) {
@@ -180,16 +183,20 @@ export class RobotController {
       engine = 0;
     } else if (Math.abs(throttle) < 0.05) {
       brake = cfg.rollingBrake;
+    } else if (speedAlongInput > driveLimit) {
+      // Gently settle after boost/dash; keep external knockback instead of clamping velocity.
+      brake = Math.min(cfg.rollingBrake, ((speedAlongInput - driveLimit) * mass * dt) / WHEEL_ANCHORS.length);
     }
     if (stunned) brake = cfg.brakeForce * 0.4;
 
     // Positive steer input turns right; with +Z forward, right is -X, i.e. negative yaw.
-    const steerAngle = (-steer * cfg.maxSteerAngle) / (1 + Math.abs(forwardSpeed) * cfg.steerSpeedFalloff);
+    const targetSteer = (-steer * cfg.maxSteerAngle) / (1 + Math.abs(forwardSpeed) * cfg.steerSpeedFalloff);
+    sim.steeringAngle += (targetSteer - sim.steeringAngle) * (1 - Math.exp(-cfg.steerResponse * dt));
     const v = this.vehicle;
     for (let i = 0; i < WHEEL_ANCHORS.length; i++) {
       v.setWheelEngineForce(i, engine);
       v.setWheelBrake(i, brake);
-      v.setWheelSteering(i, i < 2 ? steerAngle : 0);
+      v.setWheelSteering(i, i < 2 ? sim.steeringAngle : 0);
     }
 
     // Rocket Dash ability (predicted on the client as well).
@@ -250,6 +257,7 @@ export class RobotController {
     this.sim.dashCooldown = 0;
     this.sim.flipTimer = 0;
     this.sim.boosting = false;
+    this.sim.steeringAngle = 0;
   }
 
   setEnabled(enabled: boolean): void {

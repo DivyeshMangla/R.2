@@ -6,7 +6,7 @@ import { ArenaRoom } from './rooms/ArenaRoom';
 async function main(): Promise<void> {
   await initPhysics();
   const server = new Server({ transport: new WebSocketTransport() });
-  server.define(ROOM_NAME, ArenaRoom);
+  server.define(ROOM_NAME, ArenaRoom).filterBy(['mapId']);
   const port = Number(process.env.ARENA_PORT ?? SERVER_PORT);
   await server.listen(port);
   console.log(`[robot-arena] authoritative server listening on ws://localhost:${port}`);

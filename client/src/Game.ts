@@ -2,7 +2,11 @@ import * as THREE from 'three';
 import {
   applyPhysicsTuning,
   Buttons,
-  computeShots,
+  computeWeaponShots,
+  getCharacter,
+  getWeapon,
+  getMap,
+  weaponStats,
   computeStats,
   FIXED_DT,
   getPowerUp,
@@ -34,6 +38,9 @@ import {
   type SnapshotMsg,
   type Vec3,
   type WelcomeMsg,
+  type LobbySelection,
+  type MapId,
+  type WeaponId,
 } from '@robot-arena/shared';
 import { AudioSystem } from './audio/AudioSystem';
 import { AimDebug } from './debug/AimDebug';
@@ -58,13 +65,15 @@ import { VFXSystem, type VFXStats } from './render/vfx/VFXSystem';
 import { DebugOverlay, type PerfSample } from './ui/DebugOverlay';
 import { SettingsMenu } from './ui/SettingsMenu';
 import { UI, type AbilityDisplay } from './ui/UI';
+import { Lobby } from './ui/Lobby';
+import { WeaponPickupRenderer } from './render/WeaponPickupRenderer';
 
 interface QueuedEvent {
   t: number;
   e: GameEvent;
 }
 
-const IMMEDIATE_EVENTS = new Set<GameEvent['k']>(['tune', 'matchStart', 'levelup', 'powerup', 'heal']);
+const IMMEDIATE_EVENTS = new Set<GameEvent['k']>(['tune', 'matchStart', 'levelup', 'powerup', 'heal', 'weapon']);
 const HITSTOP_S = 0.08;
 const HITSTOP_SCALE = 0.15;
 
@@ -87,6 +96,11 @@ export class Game {
   private readonly renderer: Renderer;
   private readonly ui = new UI();
   private readonly audio = new AudioSystem();
+  private readonly lobby = new Lobby();
+  private joining = false;
+  private mapId: MapId = 'foundry';
+  private myWeaponId: WeaponId | null = null;
+  private pickups!: WeaponPickupRenderer;
   private readonly buffer = new SnapshotBuffer();
   private readonly cameraCtl: CameraController;
   private readonly input: InputManager;
@@ -174,31 +188,82 @@ export class Game {
       onShotResult: (m) => this.onShotResult(m),
       onDisconnect: (reason) => {
         this.connected = false;
-        this.ui.setSplashVisible(true);
-        this.ui.setStatus(`${reason}. Reload to reconnect.`, true);
+        this.started = false;
+        this.ui.setHudVisible(false);
+        this.menu?.hide();
+        document.exitPointerLock();
+        this.lobby.showDisconnected(reason);
+        this.lobby.onDeploy = () => location.reload();
       },
     });
   }
 
   async start(): Promise<void> {
-    await initPhysics();
-    this.physics = new PhysicsWorld();
+    this.ui.setSplashVisible(false);
+    this.ui.setHudVisible(false);
+    this.lobby.onDeploy = (selection) => { void this.deploy(selection); };
+    this.lobby.show();
+  }
+
+  private async deploy(selection: LobbySelection): Promise<void> {
+    if (this.joining || this.started) return;
+    this.joining = true;
+    this.mapId = selection.mapId;
+    this.myWeaponId = null;
+    let joined = false;
+    this.audio.unlock();
+    this.lobby.setBusy(true, `Connecting to ${getMap(this.mapId).name}…`);
+    try {
+      await initPhysics();
+      await this.net.connect(selection);
+      joined = true;
+      this.connected = true;
+      this.prepareMatch();
+      if (this.lastSnap) this.onSnapshot(this.lastSnap);
+      this.started = true;
+      this.lobby.hide();
+      this.ui.setHudVisible(true);
+      this.input.requestLock();
+    } catch (err) {
+      console.error('[deploy]', err);
+      this.connected = false;
+      if (joined) {
+        this.started = false;
+        this.ui.setHudVisible(false);
+        this.net.dispose();
+        this.lobby.showDisconnected('The arena could not finish loading');
+        this.lobby.onDeploy = () => location.reload();
+      } else {
+        this.lobby.setBusy(false);
+        this.lobby.setStatus('Could not deploy. Check that the game server is running, then try again.', true);
+      }
+    } finally {
+      this.joining = false;
+    }
+  }
+
+  private prepareMatch(): void {
+    this.ui.setMapTheme(this.mapId);
+    this.renderer.setMapTheme(this.mapId);
+    this.physics = new PhysicsWorld(this.mapId);
     this.predictor = new LocalPredictor(this.physics);
     const r = this.renderer;
     const scene = r.scene;
     this.cameraCtl.setCollisionWorld(this.physics.world);
 
-    this.arena = buildArena(r.maxAnisotropy);
+    this.arena = buildArena(r.maxAnisotropy, this.mapId);
     scene.add(this.arena.group);
+    this.pickups = new WeaponPickupRenderer(scene, this.mapId);
     this.vfx = new VFXSystem(scene, r.distortionScene, this.settings.maxDynamicLights, this.settings.maxDecals);
     r.setParticles(this.vfx.particleScene, [this.vfx.alpha, this.vfx.add]);
     this.fleet = new RobotFleet(scene, r.maxAnisotropy);
+    this.fleet.setMapTheme(this.mapId);
     this.dust = new DustMotes(scene);
     // Reflections come from this arena, baked once it exists (robots/VFX not yet spawned).
     r.bakeEnvironment();
 
     this.aimDebug = new AimDebug(scene);
-    this.debris = new DebrisSystem(scene, this.vfx, (p, s) => this.audio.debrisClank(p, r.camera, s));
+    this.debris = new DebrisSystem(scene, this.vfx, (p, s) => this.audio.debrisClank(p, r.camera, s), this.mapId);
     // Predicted robot contacts never give feedback; hitmarkers wait for SHOT_RESULT.
     this.projectiles = new ProjectileSystem(this.physics, this.vfx, {
       onSurfaceHit: (p, _n2, surface) => {
@@ -243,18 +308,6 @@ export class Game {
     this.ui.onPlay = () => this.onPlayClicked();
 
     requestAnimationFrame(this.loop);
-
-    const params = new URLSearchParams(location.search);
-    const name = params.get('name') ?? undefined;
-    try {
-      this.ui.setStatus('Connecting to server…');
-      await this.net.connect(name ?? '');
-      this.connected = true;
-      this.ui.setStatus('Connected. Click to deploy.');
-    } catch (err) {
-      console.error(err);
-      this.ui.setStatus(`Cannot reach the game server on ws://${location.hostname}:2567 — is "npm run dev" running?`, true);
-    }
   }
 
   /** Applies a graphics settings set to every system that depends on it. */
@@ -324,6 +377,7 @@ export class Game {
 
   private onSnapshot(m: SnapshotMsg): void {
     this.lastSnap = m;
+    if (!this.fleet) return;
     const snap = this.buffer.push(m);
     this.phase = m.phase;
 
@@ -347,6 +401,8 @@ export class Game {
 
   private syncVisualInfo(v: RobotVisual, info: PlayerInfo): void {
     v.color = info.color;
+    v.characterId = getCharacter(info.characterId).id;
+    v.weaponId = info.weaponId ?? null;
     v.level = info.level;
     this.fleet.setStacks(v, info.stacks);
   }
@@ -364,6 +420,7 @@ export class Game {
     this.predictor.setEnabled(alive);
     if (s.spawnCount !== this.mySpawnCount) {
       this.mySpawnCount = s.spawnCount;
+      this.myWeaponId = null;
       this.input.resetAim(yawFromQuat(s.q));
       this.cameraCtl.snap();
     }
@@ -383,6 +440,7 @@ export class Game {
       if (v) this.syncVisualInfo(v, p);
       if (p.id === this.myId) {
         this.myStats = computeStats(p.stacks);
+        this.myWeaponId = p.weaponId ?? null;
         this.predictor?.setModifiers(this.modifiersFromStats());
       }
     }
@@ -390,6 +448,7 @@ export class Game {
   }
 
   private onEvents(m: EventsMsg): void {
+    if (!this.vfx) return;
     for (const e of m.e) {
       if (IMMEDIATE_EVENTS.has(e.k) || this.involvesMe(e)) this.handleEvent(e);
       else this.events.push({ t: m.t, e });
@@ -431,6 +490,7 @@ export class Game {
 
   /** The server's verdict on one of our shells: the only source of hit feedback. */
   private onShotResult(r: ShotResultMsg): void {
+    if (!this.projectiles) return;
     this.projectiles.confirmShot(r, this.colorOf(this.myId));
     this.aimDebug.onShotResult(r, r.target >= 0 ? this.players.get(r.target)?.name ?? `#${r.target}` : '');
     if (!r.hit || r.dmg <= 0) return;
@@ -490,14 +550,26 @@ export class Game {
   private handleEvent(e: GameEvent): void {
     const cam = this.renderer.camera;
     switch (e.k) {
+      case 'weapon': {
+        const visual = this.fleet.get(e.id);
+        if (visual) visual.weaponId = e.weaponId;
+        const info = this.players.get(e.id);
+        if (info) info.weaponId = e.weaponId;
+        if (e.id === this.myId) {
+          this.myWeaponId = e.weaponId;
+          this.localFireCooldown = 0;
+          if (e.weaponId) this.audio.pick();
+        }
+        return;
+      }
       case 'shot': {
         if (e.owner === this.myId) return;
-        this.projectiles.spawn(e.owner, e.p, e.v, e.bounces, this.colorOf(e.owner), e.pid, -1, e.b, false);
+        this.projectiles.spawn(e.owner, e.p, e.v, e.bounces, getWeapon(e.weaponId).color, e.pid, -1, e.b, false, e.lifetime);
         // The server already flew this shell `ff` seconds (hitscan assist).
         if (e.ff > 0) this.projectiles.fastForward(e.pid, e.ff);
         const v = this.fleet.get(e.owner);
-        if (v) this.muzzleFlashFor(v, e.b);
-        this.audio.cannon(_v.set(e.p.x, e.p.y, e.p.z), cam, false);
+        if (v && e.b % getWeapon(e.weaponId).pellets === 0) this.muzzleFlashFor(v, e.b);
+        if (e.b === 0) this.audio.cannon(_v.set(e.p.x, e.p.y, e.p.z), cam, false);
         return;
       }
       case 'bounce':
@@ -769,18 +841,18 @@ export class Game {
 
   private fireLocal(frame: InputFrame): void {
     const c = this.predictor.controller;
-    if (!c) return;
-    const cfg = physicsConfig;
+    if (!c || !this.myWeaponId) return;
+    const cfg = weaponStats(this.myWeaponId);
     const st = this.myStats;
-    this.localFireCooldown = cfg.fireInterval / st.fireRateMul;
+    this.localFireCooldown = cfg.interval / st.fireRateMul;
     // Same shot spec (origin, direction, seeded spread) the server computes for this input seq.
-    const shots = computeShots(c.body.translation(), c.body.rotation(), frame.aimYaw, frame.aimPitch, st.projectileCount, this.myId, frame.seq);
-    const color = this.colorOf(this.myId);
+    const shots = computeWeaponShots(c.body.translation(), c.body.rotation(), frame.aimYaw, frame.aimPitch, st.projectileCount, this.myId, frame.seq, this.myWeaponId);
+    const color = getWeapon(this.myWeaponId).color;
     const v = this.fleet.get(this.myId);
     for (const s of shots) {
-      const vel = { x: s.dir.x * cfg.projectileSpeed, y: s.dir.y * cfg.projectileSpeed, z: s.dir.z * cfg.projectileSpeed };
-      this.projectiles.spawn(this.myId, s.origin, vel, st.ricochetBounces, color, 0, frame.seq, s.barrel, true);
-      if (v) this.muzzleFlashFor(v, s.barrel);
+      const vel = { x: s.dir.x * cfg.speed, y: s.dir.y * cfg.speed, z: s.dir.z * cfg.speed };
+      this.projectiles.spawn(this.myId, s.origin, vel, st.ricochetBounces, color, 0, frame.seq, s.barrel, true, cfg.lifetime);
+      if (v && s.barrel % getWeapon(this.myWeaponId).pellets === 0) this.muzzleFlashFor(v, s.barrel);
     }
     this.audio.cannon(null, null, true);
     this.cameraCtl.addTrauma(0.1);
@@ -965,6 +1037,7 @@ export class Game {
     this.debris.update();
     this.vfx.update(vdt, cam.position);
     this.arena.update(this.time, dt);
+    this.pickups.update(this.time, dt, this.lastSnap?.pickups ?? []);
     this.dust.update(this.time, this.renderer.renderer.getPixelRatio());
     this.cableTimer -= dt;
     if (this.cableTimer <= 0 && this.arena.sparkPoints.length > 0) {
@@ -1033,6 +1106,24 @@ export class Game {
     const h = this.container.clientHeight;
     const info = this.players.get(this.myId);
     const alive = me ? (me.flags & RobotFlags.ALIVE) !== 0 : false;
+    const equipped = this.myWeaponId ? getWeapon(this.myWeaponId) : null;
+    ui.setWeapon(equipped?.name ?? 'UNARMED', equipped?.role ?? 'Walk over a weapon to equip');
+    let prompt = '';
+    let nearest = 2.6;
+    const local = this.predictor.controller?.body.translation();
+    if (alive && local && this.started && !this.menu.isOpen) {
+      for (const pad of this.lastSnap?.pickups ?? []) {
+        const distance = Math.hypot(local.x - pad.position.x, local.y - pad.position.y, local.z - pad.position.z);
+        if (distance >= nearest) continue;
+        nearest = distance;
+        const weapon = getWeapon(pad.weaponId);
+        prompt = !pad.available ? `${weapon.name} · restocking ${Math.ceil(pad.respawnIn)}s`
+          : !this.myWeaponId ? `Walk over to collect ${weapon.name}`
+          : pad.weaponId === this.myWeaponId ? `${weapon.name} already equipped`
+          : `E · Equip ${weapon.name} / ${weapon.role}`;
+      }
+    }
+    ui.setPickupPrompt(prompt);
 
     if (me && info) {
       const c = this.predictor.controller;

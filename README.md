@@ -14,7 +14,9 @@ npm run dev
 - Game client (Vite): http://localhost:5173
 - Game server (Colyseus WebSocket): ws://localhost:2567. Override the port with the `ARENA_PORT` environment variable.
 
-Open http://localhost:5173 in two tabs. Both tabs join the same match, and bots fill the remaining seats up to 6. You can add `?name=YourName` to the URL to choose a display name.
+Open http://localhost:5173 to enter the illustrated World Atlas lobby. Choose a character, map, starter weapon, and callsign, then deploy. Players selecting the same map join the same available room; different maps have separate matches. Bots fill the remaining seats up to 6. You can add `?name=YourName` to the URL to prefill your callsign.
+
+Characters have distinct chassis attachments: Striker's racing fins, Bulwark's armor and shield, and Spectre's sensors. Their default loadouts are Pulse, Scatter, and Rail respectively; any starter weapon can be selected in the lobby. The atlas has six playable realms: **Ember Citadel** (volcanic fortress), **Neon Harbor** (futuristic city), **Mosswild Grove** (forest ridge), **Saffron Dunes** (sandstone canyons), **Frostline Basin** (glacier shelves), and **Sunken Relic** (ancient temple ruins). Each has its own collider layout, scenery, ground materials, lighting, sky, and fog. Robots automatically gain matching paint, accents, and biome fittings while keeping their selected character silhouette and weapon. The lobby, HUD, upgrade cards, scoreboards, and settings use a new parchment expedition theme. Each map has six labeled weapon pads: drive nearby and press **E** to equip a different weapon. Pads restock after 12 seconds, and respawning restores your selected starter weapon. Weapon roles are balanced Pulse Cannon, close-range Scatter Cannon, precision Rail Cannon, and rapid-fire Arc Repeater.
 
 Other scripts:
 
@@ -22,7 +24,12 @@ Other scripts:
 npm run typecheck   # strict tsc over shared, server and client
 npm run build       # production client build (client/dist)
 npm run test:aim    # headless aim / hit-registration harness (writes server/test-results/aim-after.txt)
+npm run test:driving # headless speed, braking, steering, boost and landing checks
+npm run test:lobby  # all six maps: geometry, spawn/pad clearance, ramps, loadouts, pickups
+npm run test:network # multiplayer map matching checks (requires the server running)
 ```
+
+The original generated world-atlas illustration is saved at `client/public/assets/atlas/world-atlas.png`; its full generation prompt and provenance are in `client/public/assets/atlas/README.md`. Map pins are HTML controls rather than baked text, so every realm supports pointer and keyboard selection.
 
 ## Controls
 
@@ -33,6 +40,7 @@ npm run test:aim    # headless aim / hit-registration harness (writes server/tes
 | Left click | Fire the cannon |
 | Shift | Boost (uses the energy meter) |
 | Space | Use active abilities (Rocket Dash, EMP Burst) |
+| E | Equip the weapon on a nearby available pad |
 | 1 / 2 / 3, or click a card | Pick a level-up card |
 | Tab | Full scoreboard |
 | ` or F2 | lil-gui tuning panel |
@@ -66,6 +74,7 @@ client/   Game (fixed-step accumulator loop, rendering decoupled)
 - **Interpolation:** remote robots render 100 ms in the past. Position is lerped and rotation is slerped between snapshots, and interpolation never crosses a respawn.
 - **Events:** shots, impacts, deaths and similar are batched once per server tick and replayed on the interpolated timeline. Events that affect the local player are applied immediately.
 - **Physics tuning:** every constant lives in `shared/src/physicsConfig.ts`. Edits in lil-gui are applied locally, sent to the server, validated and clamped there, then broadcast so prediction stays in sync.
+- **Driving:** the base speed limit is 12 m/s (43 km/h), or 15 m/s (54 km/h) with boost. Engine power tapers near the limit, coasting slows the robot, and steering eases toward a speed-sensitive angle. Rocket Dash adds a short burst beyond the driving limit. The smoothed steering angle is included in snapshots at index 28 (radians × 10000) and restored before prediction replay; older snapshots default it to zero.
 
 ## Known limitations
 

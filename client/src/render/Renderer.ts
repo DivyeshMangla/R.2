@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { getMap, type MapId } from '@robot-arena/shared';
 import {
   BloomEffect,
   BlendFunction,
@@ -130,6 +131,7 @@ export class Renderer {
   private readonly shadowCenter = new THREE.Vector3();
   private readonly size = new THREE.Vector2();
   private readonly container: HTMLElement;
+  private skyMaterial: THREE.ShaderMaterial | null = null;
 
   constructor(container: HTMLElement) {
     // Height fog replaces three's linear-fog chunks; must happen before any shader compiles.
@@ -199,6 +201,45 @@ export class Renderer {
     this.scene.environmentIntensity = this.tuning.envIntensity;
   }
 
+  /** Matches the light, atmosphere, and grading to the selected world before its reflection bake. */
+  setMapTheme(mapId: MapId): void {
+    const map = getMap(mapId), p = map.palette;
+    const volcanic = map.biome === 'volcanic', arctic = map.biome === 'arctic', desert = map.biome === 'desert';
+    const sky = new THREE.Color(p.sky), fog = new THREE.Color(p.fog);
+    this.scene.background = sky;
+    this.fog.color.copy(fog);
+    if (this.skyMaterial) {
+      this.skyMaterial.uniforms.uTop.value.copy(sky);
+      this.skyMaterial.uniforms.uHorizon.value.copy(fog).lerp(new THREE.Color(0xffffff), 0.2);
+      this.skyMaterial.uniforms.uGlow.value.setHex(p.accent);
+      this.skyMaterial.uniforms.uDaylight.value = volcanic ? 0.72 : 1;
+    }
+    this.sun.color.setHex(volcanic ? 0xffc096 : desert ? 0xffe2ac : arctic ? 0xecf9ff : 0xfff3d6);
+    this.rim.color.setHex(arctic ? 0xa4d8ff : p.sky);
+    this.hemi.color.copy(sky).lerp(new THREE.Color(0xffffff), 0.28);
+    this.hemi.groundColor.setHex(p.ground).multiplyScalar(0.7);
+    this.sunOffset.set(-28, desert ? 42 : 48, 24);
+    this.rimOffset.set(30, 24, -26);
+    this.tuning.exposure = volcanic ? 1.08 : arctic ? 0.94 : 1.02;
+    this.tuning.sunIntensity = volcanic ? 2.5 : desert ? 3.6 : 3;
+    this.tuning.rimIntensity = volcanic ? 0.75 : 0.65;
+    this.tuning.hemiIntensity = volcanic ? 1.1 : arctic ? 1.85 : 1.5;
+    this.tuning.envIntensity = volcanic ? 0.65 : 0.85;
+    this.tuning.fogDensity = volcanic ? 0.006 : map.biome === 'forest' ? 0.0045 : 0.003;
+    this.tuning.fogFalloff = 0.11;
+    this.tuning.bloomIntensity = volcanic ? 0.65 : 0.3;
+    this.tuning.bloomThreshold = 1.2;
+    this.tuning.vignetteDarkness = 0.16;
+    this.tuning.gradeShadowTint = 0.15;
+    this.tuning.gradeHighlightTint = desert ? 0.35 : 0.1;
+    this.tuning.gradeSaturation = 1.12;
+    this.tuning.gradeContrast = 0.08;
+    this.tuning.grainOpacity = 0;
+    this.applyTuning();
+    this.applyGrading();
+    this.followShadow(new THREE.Vector3());
+  }
+
   private createSky(): THREE.Mesh {
     const geo = new THREE.SphereGeometry(300, 48, 24);
     const mat = new THREE.ShaderMaterial({
@@ -209,6 +250,7 @@ export class Renderer {
         uTop: { value: new THREE.Color(0x02040a) },
         uHorizon: { value: new THREE.Color(0x10263a) },
         uGlow: { value: new THREE.Color(0xff8a3b) },
+        uDaylight: { value: 0 },
       },
       vertexShader: /* glsl */ `
         varying vec3 vDir;
@@ -218,22 +260,25 @@ export class Renderer {
           gl_Position = p.xyww;
         }`,
       fragmentShader: /* glsl */ `
-        uniform vec3 uTop; uniform vec3 uHorizon; uniform vec3 uGlow;
+        uniform vec3 uTop; uniform vec3 uHorizon; uniform vec3 uGlow; uniform float uDaylight;
         varying vec3 vDir;
         float hash(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }
         void main() {
           float h = clamp(vDir.y, -0.2, 1.0);
           vec3 col = mix(uHorizon, uTop, pow(max(h, 0.0), 0.45));
-          // Sodium-orange industrial light pollution on the horizon.
-          col += uGlow * 0.12 * exp(-abs(h) * 14.0);
+          col += uGlow * mix(0.12, 0.035, uDaylight) * exp(-abs(h) * 14.0);
+          // Soft bands of cloud keep the daylight sky quiet above the miniature landscape.
+          float cloud = smoothstep(0.72, 0.95, sin(vDir.x * 7.0 + vDir.z * 3.0) * 0.18 + sin(vDir.z * 11.0) * 0.13 + 0.67);
+          col = mix(col, uHorizon * 1.05, cloud * uDaylight * smoothstep(0.15, 0.5, h) * 0.22);
           vec3 cell = floor(vDir * 220.0);
           float star = step(0.9988, hash(cell)) * smoothstep(0.1, 0.45, h);
-          col += vec3(star) * 1.2;
+          col += vec3(star) * 1.2 * (1.0 - uDaylight);
           gl_FragColor = vec4(col, 1.0);
           #include <colorspace_fragment>
         }`,
     });
     const sky = new THREE.Mesh(geo, mat);
+    this.skyMaterial = mat;
     sky.name = 'Sky';
     sky.frustumCulled = false;
     sky.renderOrder = -1;

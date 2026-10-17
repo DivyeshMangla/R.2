@@ -1,16 +1,18 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { BARREL_LENGTH, CHASSIS_HALF, TURRET_HEIGHT, TWIN_BARREL_OFFSET, WHEEL_ANCHORS, physicsConfig, type Vec3 } from '@robot-arena/shared';
+import { BARREL_LENGTH, CHASSIS_HALF, TURRET_HEIGHT, TWIN_BARREL_OFFSET, WHEEL_ANCHORS, physicsConfig, type CharacterId, type MapBiome, type Vec3, type WeaponId } from '@robot-arena/shared';
 
 /** Which transform a part follows. */
 export type SlotKind = 'chassis' | 'turret' | 'barrel' | 'wheel' | 'arm' | 'shock';
 
 export type PartMaterial =
   | 'paint'
+  | 'canvas'
   | 'steel'
   | 'barrel'
   | 'accent'
+  | 'weapon'
   | 'number'
   | 'chrome'
   | 'rubber'
@@ -40,6 +42,9 @@ export interface PartDef {
   locals?: THREE.Matrix4[];
   addon?: AddonKey;
   variant?: 'single' | 'twin';
+  character?: CharacterId;
+  weapon?: WeaponId;
+  biome?: MapBiome;
 }
 
 /** Turret pivot in chassis space and barrel mount in turret space. */
@@ -411,8 +416,174 @@ function addonParts(): PartDef[] {
   ];
 }
 
+/** Character trim stays close to the common chassis; every character keeps the same collision body. */
+function characterParts(): PartDef[] {
+  const fin = new THREE.Shape();
+  fin.moveTo(-0.3, 0);
+  fin.lineTo(0.28, 0);
+  fin.lineTo(-0.17, 0.64);
+  fin.closePath();
+  const finGeo = new THREE.ExtrudeGeometry(fin, { depth: 0.055, bevelEnabled: false }).rotateY(Math.PI / 2);
+  const strikerFins = [-1, 1].map((s) => place(finGeo.clone(), s * 0.62, 0.32, -0.65));
+  finGeo.dispose();
+  const strikerWing = [place(rbox(1.65, 0.1, 0.3, 0.025), 0, 0.7, -0.84)];
+  for (const s of [-1, 1]) strikerWing.push(place(new THREE.BoxGeometry(0.04, 0.2, 0.14), s * 0.55, 0.49, -0.84));
+
+  const bulwarkArmor: THREE.BufferGeometry[] = [];
+  const bulwarkTrim: THREE.BufferGeometry[] = [];
+  for (const s of [-1, 1]) {
+    bulwarkArmor.push(place(rbox(0.27, 0.55, 1.05, 0.045), s * 0.68, 0.25, -0.1, 0, 0, -s * 0.12));
+    bulwarkTrim.push(place(new THREE.BoxGeometry(0.025, 0.08, 0.65), s * 0.8, 0.3, -0.1));
+  }
+  bulwarkArmor.push(place(rbox(1.36, 0.38, 0.15, 0.045), 0, 0.07, 1.05, -0.2));
+  const shield = new THREE.Shape();
+  shield.moveTo(-0.19, 0.18); shield.lineTo(0.19, 0.18); shield.lineTo(0.17, -0.08); shield.lineTo(0, -0.23); shield.lineTo(-0.17, -0.08); shield.closePath();
+  const shieldGeo = new THREE.ExtrudeGeometry(shield, { depth: 0.035, bevelEnabled: false }).translate(0, 0.14, 1.15);
+
+  const spectreMast = [
+    place(cyl(0.018, 0.025, 0.52, 8), 0.27, 0.7, -0.28),
+    place(new THREE.TorusGeometry(0.18, 0.025, 6, 24), 0.27, 0.96, -0.28, 0, Math.PI / 4),
+    place(rbox(0.22, 0.14, 0.38, 0.03), -0.29, 0.52, 0.08),
+  ];
+  const spectreTrim = [place(new THREE.SphereGeometry(0.055, 10, 8), 0.27, 0.96, -0.28)];
+  for (const s of [-1, 1]) spectreTrim.push(place(new THREE.BoxGeometry(0.035, 0.035, 0.82), s * 0.62, 0.35, -0.32, 0, s * 0.2));
+  return [
+    { name: 'character.striker.fins', character: 'striker', slot: 'chassis', material: 'paint', geometry: merge(strikerFins), castShadow: true },
+    { name: 'character.striker.spoiler', character: 'striker', slot: 'chassis', material: 'accent', geometry: merge(strikerWing), castShadow: true },
+    { name: 'character.bulwark.armor', character: 'bulwark', slot: 'chassis', material: 'paint', geometry: merge(bulwarkArmor), castShadow: true },
+    { name: 'character.bulwark.shield', character: 'bulwark', slot: 'chassis', material: 'accent', geometry: merge([...bulwarkTrim, shieldGeo]), castShadow: false },
+    { name: 'character.bulwark.mantlet', character: 'bulwark', slot: 'turret', material: 'paint', geometry: place(rbox(1.32, 0.46, 0.25, 0.06), 0, 0.28, 0.28), castShadow: true },
+    { name: 'character.spectre.sensors', character: 'spectre', slot: 'turret', material: 'chrome', geometry: merge(spectreMast), castShadow: true },
+    { name: 'character.spectre.signal', character: 'spectre', slot: 'chassis', material: 'accent', geometry: merge(spectreTrim.slice(1)), castShadow: false },
+    { name: 'character.spectre.sensorLight', character: 'spectre', slot: 'turret', material: 'accent', geometry: spectreTrim[0], castShadow: false },
+  ];
+}
+
+/** Distinct weapon housings share the same muzzle point and aim transform. */
+function weaponParts(): PartDef[] {
+  const result: PartDef[] = [];
+  const tip = BARREL_TIP_Z - 0.12;
+  for (const weapon of ['pulse', 'scatter', 'rail', 'repeater'] as const) {
+    const shell: THREE.BufferGeometry[] = [];
+    const glow: THREE.BufferGeometry[] = [];
+    switch (weapon) {
+      case 'pulse':
+        for (const z of [0.42, 0.7, 0.98]) glow.push(place(new THREE.TorusGeometry(0.135, 0.025, 6, 20), 0, 0, z));
+        shell.push(place(rbox(0.28, 0.24, 0.48, 0.035), 0, 0, 0.36));
+        break;
+      case 'scatter':
+        shell.push(place(rbox(0.4, 0.3, 0.66, 0.05), 0, 0, 0.86));
+        for (const x of [-0.13, 0, 0.13]) glow.push(place(cyl(0.045, 0.045, 0.07, 10), x, 0, tip, Math.PI / 2));
+        break;
+      case 'rail':
+        for (const s of [-1, 1]) {
+          shell.push(place(rbox(0.075, 0.19, 1.08, 0.018), s * 0.155, 0, 0.73));
+          glow.push(place(new THREE.BoxGeometry(0.025, 0.055, 0.95), s * 0.115, 0.06, 0.76));
+        }
+        shell.push(place(rbox(0.2, 0.12, 0.33, 0.02), 0, 0.2, 0.2));
+        break;
+      case 'repeater':
+        shell.push(place(cyl(0.25, 0.25, 0.36, 12), 0, -0.06, 0.38, Math.PI / 2));
+        for (let i = 0; i < 4; i++) {
+          const a = i * Math.PI / 2;
+          shell.push(place(cyl(0.04, 0.04, 0.65, 10), Math.cos(a) * 0.13, Math.sin(a) * 0.13, 0.94, Math.PI / 2));
+          glow.push(place(cyl(0.04, 0.04, 0.035, 10), Math.cos(a) * 0.13, Math.sin(a) * 0.13, tip, Math.PI / 2));
+        }
+        break;
+    }
+    for (const [material, geos] of [['barrel', shell], ['weapon', glow]] as const) {
+      const geometry = merge(geos);
+      result.push({ name: `weapon.${weapon}.${material}.single`, weapon, slot: 'barrel', material, geometry, castShadow: material === 'barrel', variant: 'single' });
+      result.push({ name: `weapon.${weapon}.${material}.twin`, weapon, slot: 'barrel', material, geometry, castShadow: material === 'barrel', variant: 'twin', locals: [new THREE.Matrix4().makeTranslation(-TWIN_BARREL_OFFSET, 0, 0), new THREE.Matrix4().makeTranslation(TWIN_BARREL_OFFSET, 0, 0)] });
+    }
+  }
+  return result;
+}
+
+/** Expedition fittings change the silhouette without moving any gameplay mount. */
+function biomeParts(): PartDef[] {
+  const result: PartDef[] = [];
+  const add = (biome: MapBiome, detail: string, material: PartMaterial, pieces: THREE.BufferGeometry[]): void => {
+    result.push({ name: `biome.${biome}.${detail}`, biome, slot: 'chassis', material, geometry: merge(pieces.map((g) => projectUV(g, 1.1))), castShadow: material !== 'accent' });
+  };
+
+  const heatArmor: THREE.BufferGeometry[] = [];
+  const vents: THREE.BufferGeometry[] = [];
+  for (const s of [-1, 1]) {
+    heatArmor.push(place(rbox(0.24, 0.16, 0.86, 0.04), s * 0.94, 0.38, -0.65, 0, 0, -s * 0.2));
+    for (let i = 0; i < 4; i++) vents.push(place(new THREE.BoxGeometry(0.16, 0.025, 0.045), s * 0.94, 0.48, -0.91 + i * 0.17, 0, 0, -s * 0.2));
+    heatArmor.push(place(rbox(0.32, 0.16, 0.42, 0.03), s * 0.55, 0.43, 0.84, -0.16, 0, s * 0.18));
+  }
+  add('volcanic', 'heatShields', 'paint', heatArmor);
+  add('volcanic', 'heatVents', 'accent', vents);
+
+  const leaf = new THREE.Shape();
+  leaf.moveTo(0, -0.38);
+  leaf.quadraticCurveTo(0.29, -0.1, 0, 0.42);
+  leaf.quadraticCurveTo(-0.29, -0.1, 0, -0.38);
+  const leafGeo = new THREE.ExtrudeGeometry(leaf, { depth: 0.035, bevelEnabled: false }).rotateX(-Math.PI / 2);
+  const leaves: THREE.BufferGeometry[] = [];
+  const veins: THREE.BufferGeometry[] = [];
+  for (const s of [-1, 1]) {
+    for (let i = 0; i < 3; i++) {
+      leaves.push(place(leafGeo.clone(), s * 0.95, 0.38 + i * 0.055, -0.65 + i * 0.43, 0, s * (0.3 + i * 0.2), -s * 0.3));
+      veins.push(place(new THREE.BoxGeometry(0.018, 0.018, 0.43), s * 0.95, 0.43 + i * 0.055, -0.65 + i * 0.43, 0, s * (0.3 + i * 0.2), -s * 0.3));
+    }
+  }
+  leafGeo.dispose();
+  add('forest', 'camouflageLeaves', 'canvas', leaves);
+  add('forest', 'leafVeins', 'paint', veins);
+
+  const canvas = [place(rbox(1.02, 0.21, 0.4, 0.1, 3), 0, 0.49, -1.0)];
+  const dustPlates: THREE.BufferGeometry[] = [];
+  const straps: THREE.BufferGeometry[] = [];
+  for (const s of [-1, 1]) {
+    canvas.push(place(rbox(0.33, 0.16, 0.56, 0.06), s * 0.9, 0.39, 0.64, -0.1, 0, -s * 0.12));
+    dustPlates.push(place(rbox(0.1, 0.24, 0.48, 0.02), s * 1.08, -0.01, -1.02, -0.2, 0, -s * 0.1));
+    straps.push(place(new THREE.BoxGeometry(0.055, 0.024, 0.44), s * 0.32, 0.605, -1.0));
+  }
+  add('desert', 'canvasPacks', 'canvas', canvas);
+  add('desert', 'dustGuards', 'paint', dustPlates);
+  add('desert', 'packStraps', 'steel', straps);
+
+  const insulation: THREE.BufferGeometry[] = [];
+  const frost: THREE.BufferGeometry[] = [];
+  for (const s of [-1, 1]) {
+    insulation.push(place(rbox(0.37, 0.18, 0.86, 0.075, 3), s * 0.95, 0.39, -0.56));
+    insulation.push(place(rbox(0.38, 0.15, 0.4, 0.055), s * 0.51, 0.42, 0.86, -0.12));
+    for (let i = 0; i < 3; i++) frost.push(place(new THREE.ConeGeometry(0.055, 0.2 + i * 0.04, 5), s * (0.84 + i * 0.1), 0.57, -0.9 + i * 0.15, s * 0.3, 0, -s * 0.35));
+  }
+  add('arctic', 'insulatedPanels', 'canvas', insulation);
+  add('arctic', 'iceCrystals', 'accent', frost);
+
+  const tablets: THREE.BufferGeometry[] = [];
+  const runes: THREE.BufferGeometry[] = [];
+  for (const s of [-1, 1]) {
+    tablets.push(place(rbox(0.27, 0.12, 0.74, 0.035), s * 0.96, 0.39, -0.55, 0, 0, -s * 0.15));
+    for (let i = 0; i < 3; i++) {
+      const z = -0.79 + i * 0.24;
+      runes.push(place(new THREE.BoxGeometry(0.11, 0.018, 0.018), s * 0.96, 0.465, z, 0, Math.PI / 4));
+      runes.push(place(new THREE.BoxGeometry(0.018, 0.018, 0.11), s * 0.96, 0.465, z, 0, Math.PI / 4));
+    }
+  }
+  tablets.push(place(new THREE.TorusGeometry(0.15, 0.042, 6, 4), 0, 0.405, 0.9, -Math.PI / 2, 0, Math.PI / 4));
+  add('ancient', 'bronzeTablets', 'paint', tablets);
+  add('ancient', 'etchedRunes', 'accent', runes);
+
+  const aerial = [
+    place(cyl(0.016, 0.025, 0.78, 8), -0.83, 0.82, -0.93, 0.12),
+    place(new THREE.TorusGeometry(0.13, 0.018, 6, 16), -0.83, 1.15, -0.97, Math.PI / 2),
+    place(rbox(0.36, 0.18, 0.58, 0.03), 0.88, 0.39, -0.69),
+  ];
+  const signal = [place(new THREE.SphereGeometry(0.045, 8, 6), -0.83, 1.22, -0.98)];
+  for (let i = 0; i < 3; i++) signal.push(place(new THREE.BoxGeometry(0.25, 0.018, 0.018), 0.88, 0.49, -0.89 + i * 0.19));
+  add('urban', 'surveyAerial', 'paint', aerial);
+  add('urban', 'signalBands', 'accent', signal);
+  return result;
+}
+
 export function buildRobotParts(): PartDef[] {
-  return [...chassisParts(), rivetPart(), ...turretParts(), ...barrelParts(), ...wheelParts(), ...suspensionParts(), ...addonParts()];
+  return [...chassisParts(), rivetPart(), ...turretParts(), ...barrelParts(), ...wheelParts(), ...suspensionParts(), ...addonParts(), ...characterParts(), ...weaponParts(), ...biomeParts()];
 }
 
 /** Chassis-space mount points for the suspension links (lower arm + shock top). */

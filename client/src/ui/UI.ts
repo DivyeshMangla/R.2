@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { getPowerUp, MAX_LEVEL, RARITY_COLORS, type CardOfferMsg, type PlayerInfo, type PowerUpId, type PowerUpStacks, type ResultsMsg } from '@robot-arena/shared';
+import { getMap, getPowerUp, MAX_LEVEL, RARITY_COLORS, type CardOfferMsg, type MapId, type PlayerInfo, type PowerUpId, type PowerUpStacks, type ResultsMsg } from '@robot-arena/shared';
 import './styles.css';
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', parent?: HTMLElement, text?: string): HTMLElementTagNameMap[K] {
@@ -12,6 +12,14 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', paren
 
 function hex(color: number): string {
   return `#${color.toString(16).padStart(6, '0')}`;
+}
+
+/** Keep pilot hues readable when they are printed on the light paper panels. */
+function inkHex(color: number): string {
+  const r = Math.round(((color >> 16) & 255) * 0.3 + 52 * 0.7);
+  const g = Math.round(((color >> 8) & 255) * 0.3 + 47 * 0.7);
+  const b = Math.round((color & 255) * 0.3 + 39 * 0.7);
+  return hex((r << 16) | (g << 8) | b);
 }
 
 export interface AbilityDisplay {
@@ -64,6 +72,11 @@ export class UI {
   private readonly resultsOverlay: HTMLDivElement;
   private readonly resultsBox: HTMLDivElement;
   private readonly netInfo: HTMLDivElement;
+  private readonly weaponHud: HTMLDivElement;
+  private readonly pickupPrompt: HTMLDivElement;
+  private readonly mapName: HTMLDivElement;
+  private readonly biomeLabel: HTMLDivElement;
+  private weaponLabel = '';
   private readonly hitArcs: { node: HTMLDivElement; t: number }[] = [];
   private nextArc = 0;
   private readonly killBanner: HTMLDivElement;
@@ -91,11 +104,17 @@ export class UI {
     this.lowHpEl = el('div', 'low-hp-vignette', this.hud);
     this.numbers = el('div', '', this.hud);
 
+    const folio = el('div', 'map-folio panel', this.hud);
+    el('span', 'folio-mark', folio, '✧');
+    el('small', 'folio-eyebrow', folio, 'THE EXPEDITION ATLAS');
+    this.mapName = el('div', 'folio-name', folio);
+    this.biomeLabel = el('div', 'folio-biome', folio);
+
     const vitals = el('div', 'vitals panel', this.hud);
     vitals.style.position = 'absolute';
     this.levelBadge = el('div', 'level-badge', vitals, '1');
     const hpRow = el('div', 'row', vitals);
-    el('div', 'label', hpRow, 'HP');
+    el('div', 'label', hpRow, 'HULL');
     this.hpBar = el('div', 'bar hp', hpRow);
     this.hpGhost = el('div', 'ghost', this.hpBar);
     this.hpFill = el('div', 'fill', this.hpBar);
@@ -121,6 +140,8 @@ export class UI {
     this.centerMsg = el('div', 'center-msg', this.hud);
     this.statusTag = el('div', 'status-tag panel', this.hud, 'STUNNED');
     this.netInfo = el('div', 'net-info', this.hud);
+    this.weaponHud = el('div', 'weapon-hud', this.hud);
+    this.pickupPrompt = el('div', 'pickup-prompt', this.hud);
     const arcs = el('div', 'hit-indicator', this.hud);
     for (let i = 0; i < 4; i++) this.hitArcs.push({ node: el('div', 'hit-arc', arcs), t: 0 });
     this.killBanner = el('div', 'kill-banner', this.hud);
@@ -164,12 +185,43 @@ export class UI {
       el('div', '', controls, d);
     }
     this.splash.addEventListener('click', () => this.onPlay?.());
+    this.setMapTheme('foundry');
+  }
+
+  setMapTheme(mapId: MapId): void {
+    const map = getMap(mapId);
+    const labels = { volcanic: 'Volcanic frontier', urban: 'Harbor district', forest: 'Living woodland', desert: 'Dune country', arctic: 'Frozen frontier', ancient: 'Ancient sanctuary' };
+    this.mapName.textContent = map.name;
+    this.biomeLabel.textContent = labels[map.biome];
+    for (const surface of [this.hud, this.resultsOverlay, this.splash]) {
+      surface.dataset.biome = map.biome;
+      surface.style.setProperty('--biome-accent', hex(map.palette.accent));
+      surface.style.setProperty('--biome-ground', hex(map.palette.ground));
+    }
   }
 
   // ------------------------------------------------------------- splash
 
   setSplashVisible(v: boolean): void {
     this.splash.classList.toggle('hidden', !v);
+  }
+
+  setHudVisible(visible: boolean): void {
+    this.hud.style.display = visible ? '' : 'none';
+  }
+
+  setWeapon(name: string, role: string): void {
+    const label = `${name}|${role}`;
+    if (label === this.weaponLabel) return;
+    this.weaponLabel = label;
+    this.weaponHud.textContent = '';
+    el('small', '', this.weaponHud, 'EQUIPPED WEAPON');
+    el('strong', '', this.weaponHud, name);
+    el('small', '', this.weaponHud, role);
+  }
+
+  setPickupPrompt(text: string): void {
+    if (this.pickupPrompt.textContent !== text) this.pickupPrompt.textContent = text;
   }
 
   setStatus(text: string, error = false): void {
@@ -237,7 +289,7 @@ export class UI {
     const row = el('div', `kill panel${involvesMe ? ' me' : ''}`, this.killfeed);
     const name = (p: PlayerInfo | undefined, fallback: string): HTMLSpanElement => {
       const s = el('span', '', row, p ? p.name : fallback);
-      if (p) s.style.color = hex(p.color);
+      if (p) s.style.color = inkHex(p.color);
       return s;
     };
     if (killer && killer !== victim) name(killer, '');
@@ -377,6 +429,9 @@ export class UI {
       const def = getPowerUp(id);
       if (!def) return;
       const card = el('div', 'card', this.cardsRow);
+      card.tabIndex = 0;
+      card.setAttribute('role', 'button');
+      card.setAttribute('aria-label', `Choose ${def.name}: ${def.description}`);
       card.style.setProperty('--rc', RARITY_COLORS[def.rarity]);
       el('div', 'icon', card, def.icon);
       el('div', 'name', card, def.name);
@@ -385,6 +440,12 @@ export class UI {
       el('div', 'stack', card, `${stacks[id] ?? 0}/${def.maxStacks}`);
       el('div', 'hotkey', card, `[${i + 1}]`);
       card.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.onPick?.(i);
+      });
+      card.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
         e.stopPropagation();
         this.onPick?.(i);
       });
@@ -410,7 +471,7 @@ export class UI {
     el('h2', '', this.resultsBox, 'MATCH OVER');
     const winner = msg.standings[0];
     const w = el('div', 'winner', this.resultsBox, winner ? `${winner.name} wins with ${winner.kills} kills` : '');
-    if (winner) w.style.color = hex(winner.color);
+    if (winner) w.style.color = inkHex(winner.color);
     msg.standings.forEach((s, i) => {
       const line = el('div', `line${s.id === myId ? ' me' : ''}`, this.resultsBox);
       el('div', 'rank', line, `${i + 1}`);

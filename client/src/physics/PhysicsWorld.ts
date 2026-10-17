@@ -7,6 +7,7 @@ import {
   createPhysicsWorld,
   syncGravity,
   type ArenaBlockKind,
+  type MapId,
   type Quat,
   type Vec3,
 } from '@robot-arena/shared';
@@ -28,9 +29,9 @@ export class PhysicsWorld {
   private readonly proxies = new Map<number, Proxy>();
   private readonly ownerByCollider = new Map<number, number>();
 
-  constructor() {
+  constructor(mapId: MapId = 'foundry') {
     this.world = createPhysicsWorld();
-    this.envHandles = buildArenaColliders(this.world);
+    this.envHandles = buildArenaColliders(this.world, mapId);
   }
 
   readonly isEnvironment = (c: Collider): boolean => this.envHandles.has(c.handle);

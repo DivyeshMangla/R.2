@@ -1,14 +1,15 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import type { Collider, World } from '@dimforge/rapier3d-compat';
-import { ARENA_BLOCKS, type ArenaBlockKind } from './arena';
+import type { ArenaBlockKind } from './arena';
 import { CollisionGroups } from './collisionGroups';
+import { getArenaDefinition, type MapId } from './maps';
 import { physicsConfig } from './physicsConfig';
 
 /** Creates the static arena colliders in `world`; returns collider handle -> block kind. */
-export function buildArenaColliders(world: World): Map<number, ArenaBlockKind> {
+export function buildArenaColliders(world: World, mapId: MapId = 'foundry'): Map<number, ArenaBlockKind> {
   const handles = new Map<number, ArenaBlockKind>();
   const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
-  for (const b of ARENA_BLOCKS) {
+  for (const b of getArenaDefinition(mapId).blocks) {
     const desc = RAPIER.ColliderDesc.cuboid(b.half.x, b.half.y, b.half.z)
       .setTranslation(b.center.x, b.center.y, b.center.z)
       .setRotation(b.rotation)

@@ -11,3 +11,5 @@ export * from './robotController';
 export * from './projectile';
 export * from './hitbox';
 export * from './aim';
+export * from './loadout';
+export * from './maps';

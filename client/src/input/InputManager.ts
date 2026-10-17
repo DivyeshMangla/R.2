@@ -67,6 +67,7 @@ export class InputManager {
     this.fireLatched = false;
     if (k.has('ShiftLeft') || k.has('ShiftRight')) buttons |= Buttons.BOOST;
     if (k.has('Space')) buttons |= Buttons.ABILITY;
+    if (k.has('KeyE')) buttons |= Buttons.INTERACT;
     this.seq += 1;
     return { seq: this.seq, throttle: fwd, steer, aimYaw: this.viewYaw, buttons, aimPitch: 0, viewT: 0 };
   }
@@ -77,8 +78,9 @@ export class InputManager {
   }
 
   private readonly onKeyDown = (e: KeyboardEvent): void => {
-    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
-    if (e.code === 'Tab' || e.code === 'Space') e.preventDefault();
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement || e.target instanceof HTMLTextAreaElement) return;
+    if (e.target instanceof HTMLElement && (e.target.isContentEditable || e.target.closest('.garage'))) return;
+    if (this.locked && (e.code === 'Tab' || e.code === 'Space')) e.preventDefault();
     if (!e.repeat) for (const h of this.keyHandlers) h(e.code, e);
     this.keys.add(e.code);
   };

@@ -1,6 +1,6 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import type { Collider, World } from '@dimforge/rapier3d-compat';
-import { buildArenaColliders, CollisionGroups, createPhysicsWorld, syncGravity, type Vec3 } from '@robot-arena/shared';
+import { buildArenaColliders, CollisionGroups, createPhysicsWorld, syncGravity, type MapId, type Vec3 } from '@robot-arena/shared';
 
 /** Authoritative Rapier world: the static arena plus every robot chassis. */
 export class PhysicsWorld {
@@ -8,9 +8,9 @@ export class PhysicsWorld {
   private readonly envHandles: ReadonlyMap<number, unknown>;
   private readonly robotByCollider = new Map<number, number>();
 
-  constructor() {
+  constructor(mapId: MapId = 'foundry') {
     this.world = createPhysicsWorld();
-    this.envHandles = buildArenaColliders(this.world);
+    this.envHandles = buildArenaColliders(this.world, mapId);
   }
 
   registerRobot(collider: Collider, robotId: number): void {

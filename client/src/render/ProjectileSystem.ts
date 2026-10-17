@@ -115,7 +115,7 @@ export class ProjectileSystem {
   }
 
   /** `seq` >= 0 marks the local player's predicted shell (input seq + barrel). */
-  spawn(owner: number, pos: Vec3, vel: Vec3, bounces: number, color: number, serverPid: number, seq: number, barrel: number, assist: boolean): void {
+  spawn(owner: number, pos: Vec3, vel: Vec3, bounces: number, color: number, serverPid: number, seq: number, barrel: number, assist: boolean, lifetime = physicsConfig.projectileLifetime): void {
     let p: Shell | undefined;
     for (const s of this.pool) {
       if (!s.active) {
@@ -132,7 +132,7 @@ export class ProjectileSystem {
     st.vel.x = vel.x; st.vel.y = vel.y; st.vel.z = vel.z;
     st.bouncesLeft = bounces;
     st.age = 0;
-    st.lifetime = physicsConfig.projectileLifetime;
+    st.lifetime = lifetime;
     st.radius = physicsConfig.projectileRadius;
     st.assist = assist;
     st.dist = 0;

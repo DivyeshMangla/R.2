@@ -1,6 +1,8 @@
 import type { PhysicsConfig } from './physicsConfig';
 import type { PowerUpId, PowerUpStacks } from './powerups';
 import type { Quat, Vec3 } from './math';
+import type { CharacterId, WeaponId } from './loadout';
+import type { MapId, WeaponPad } from './maps';
 
 // ---------------------------------------------------------------------------
 // Input
@@ -10,6 +12,7 @@ export const Buttons = {
   FIRE: 1,
   BOOST: 2,
   ABILITY: 4,
+  INTERACT: 8,
 } as const;
 
 export interface InputFrame {
@@ -64,7 +67,7 @@ export function decodeInput(w: unknown): InputFrame | null {
     throttle: Math.max(-1, Math.min(1, t / 127)),
     steer: Math.max(-1, Math.min(1, s / 127)),
     aimYaw: a / (v2 ? AIM_Q : 1000),
-    buttons: b & 7,
+    buttons: b & 15,
     aimPitch: v2 ? Math.max(-1.5, Math.min(1.5, (w[5] as number) / AIM_Q)) : 0,
     viewT: v2 ? Math.max(0, w[6] as number) : 0,
   };
@@ -107,9 +110,11 @@ export interface RobotNetState {
   fireCooldown: number;
   /** Barrel pitch, radians. */
   aimPitch: number;
+  /** Smoothed front-wheel angle, radians; restored before prediction replay. */
+  steeringAngle: number;
 }
 
-/** Robot snapshot entry. Index 27 (aimPitch*10000) was appended for the pitch-aware turret. */
+/** Robot snapshot entry. Appended fields: index 27 aimPitch, index 28 steeringAngle (both *10000). */
 export type RobotWire = number[];
 
 const POS_Q = 1000;
@@ -136,6 +141,7 @@ export function encodeRobot(s: RobotNetState): RobotWire {
     s.spawnCount,
     Math.round(s.fireCooldown * 1000),
     Math.round(s.aimPitch * 10000),
+    Math.round(s.steeringAngle * 10000),
   ];
 }
 
@@ -162,6 +168,7 @@ export function decodeRobot(w: RobotWire): RobotNetState {
     spawnCount: w[25],
     fireCooldown: w[26] / 1000,
     aimPitch: (w[27] ?? 0) / 10000,
+    steeringAngle: (w[28] ?? 0) / 10000,
   };
 }
 
@@ -183,6 +190,13 @@ export interface SnapshotMsg {
   left: number;
   r: RobotWire[];
   m: MineWire[];
+  pickups?: WeaponPickupState[];
+}
+
+export interface WeaponPickupState extends WeaponPad {
+  available: boolean;
+  /** Seconds until the pad becomes available again. */
+  respawnIn: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -200,6 +214,8 @@ export interface PlayerInfo {
   xp: number;
   xpToNext: number;
   stacks: PowerUpStacks;
+  characterId?: CharacterId;
+  weaponId?: WeaponId | null;
 }
 
 export interface RosterMsg {
@@ -210,6 +226,7 @@ export interface WelcomeMsg {
   yourId: number;
   serverTime: number;
   tuning: PhysicsConfig;
+  mapId?: MapId;
 }
 
 export interface CardOfferMsg {
@@ -270,7 +287,7 @@ export type GameEvent =
    * the shell by `ff` seconds (hitscan assist), so viewers should too.
    * `seq`/`b` identify the trigger pull (input seq, barrel) for the shooter.
    */
-  | { k: 'shot'; pid: number; owner: number; p: Vec3; v: Vec3; bounces: number; seq: number; b: number; ff: number }
+  | { k: 'shot'; pid: number; owner: number; p: Vec3; v: Vec3; bounces: number; seq: number; b: number; ff: number; weaponId?: WeaponId; lifetime?: number }
   | { k: 'impact'; pid: number; p: Vec3; n: Vec3; target: number; dmg: number; owner: number }
   | { k: 'bounce'; pid: number; p: Vec3; v: Vec3 }
   | { k: 'dmg'; target: number; source: number; amount: number; p: Vec3; cause: 'ram' | 'mine' }
@@ -280,6 +297,7 @@ export type GameEvent =
   | { k: 'respawn'; id: number; p: Vec3; yaw: number }
   | { k: 'levelup'; id: number; level: number }
   | { k: 'powerup'; id: number; powerup: PowerUpId }
+  | { k: 'weapon'; id: number; weaponId: WeaponId | null }
   | { k: 'emp'; id: number; p: Vec3; r: number; hits: number[] }
   | { k: 'dash'; id: number }
   | { k: 'mineBoom'; mid: number; p: Vec3; owner: number }

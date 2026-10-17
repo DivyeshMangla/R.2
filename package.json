@@ -11,7 +11,10 @@
     "dev": "concurrently -k -n server,client -c cyan,magenta \"npm:dev -w server\" \"npm:dev -w client\"",
     "build": "npm run build -w client",
     "typecheck": "tsc -p shared --noEmit && tsc -p server --noEmit && tsc -p client --noEmit",
-    "test:aim": "npm run test:aim -w server"
+    "test:aim": "npm run test:aim -w server",
+    "test:driving": "npm run test:driving -w server",
+    "test:lobby": "npm run test:lobby -w server",
+    "test:network": "npm run test:network -w server"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",

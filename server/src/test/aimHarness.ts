@@ -170,6 +170,7 @@ function runScenario(sc: Scenario, rttMs: number): RunResult {
     return r;
   };
   const shooter = mk(1, 'human', sc.shooter, sc.shooterYaw);
+  shooter.weaponId = 'pulse';
   const target = mk(2, null, sc.target, sc.moving ? Math.PI / 2 : sc.shooterYaw + Math.PI);
   settle(physics, [shooter, target]);
   const shooterState: RobotPhysState = shooter.controller.getState();

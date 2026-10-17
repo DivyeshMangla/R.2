@@ -4,6 +4,8 @@ import {
   dot,
   encodeRobot,
   FIXED_DT,
+  getArenaDefinition,
+  getMap,
   MATCH_DURATION_S,
   MatchPhase,
   MAX_INPUT_QUEUE,
@@ -15,7 +17,6 @@ import {
   RobotController,
   ROBOT_COLORS,
   SNAPSHOT_EVERY_TICKS,
-  SPAWN_POINTS,
   SPAWN_PROTECTION_S,
   applyPhysicsTuning,
   distance,
@@ -23,12 +24,15 @@ import {
   type GameEvent,
   type InputFrame,
   type MatchPhaseValue,
+  type MapId,
   type ResultsMsg,
   type RosterMsg,
   type SnapshotMsg,
   type SpawnPoint,
   type Vec3,
   type WelcomeMsg,
+  type WeaponPad,
+  type WeaponPickupState,
 } from '@robot-arena/shared';
 import { BotAI } from './BotAI';
 import { LagCompensator, type PoseSource as LagPose } from './LagCompensator';
@@ -45,10 +49,14 @@ export interface NetSink {
 }
 
 const MAX_CATCHUP_STEPS = 5;
+const WEAPON_PICKUP_RADIUS = 2.6;
+const WEAPON_RESPAWN_S = 12;
 
 /** The authoritative match: fixed 60 Hz physics, combat resolution, bots and match flow. */
 export class GameSimulation implements GameHost {
-  readonly physics = new PhysicsWorld();
+  readonly physics: PhysicsWorld;
+  readonly mapId: MapId;
+  readonly spawnPoints: readonly SpawnPoint[];
   time = 0;
 
   private readonly net: NetSink;
@@ -59,6 +67,7 @@ export class GameSimulation implements GameHost {
   private readonly ramCooldowns = new Map<string, number>();
   private readonly lag = new LagCompensator();
   private readonly clock: () => number;
+  private readonly weaponPads: { pad: WeaponPad; availableAt: number }[];
   /** Server time (ms) of the last completed tick; snapshots, events and lag history share it. */
   private tickTimeMs = 0;
 
@@ -73,8 +82,13 @@ export class GameSimulation implements GameHost {
   private humanCounter = 0;
 
   /** `clock` returns server time in ms (wall clock by default; the aim harness injects a virtual one). */
-  constructor(net: NetSink, clock?: () => number) {
+  constructor(net: NetSink, clock?: () => number, mapId: MapId = 'foundry') {
     this.net = net;
+    this.mapId = getMap(mapId).id;
+    const arena = getArenaDefinition(this.mapId);
+    this.physics = new PhysicsWorld(this.mapId);
+    this.spawnPoints = arena.spawns;
+    this.weaponPads = arena.pickups.map((pad) => ({ pad, availableAt: 0 }));
     const startMs = performance.now();
     this.clock = clock ?? (() => performance.now() - startMs);
     this.weapons = new WeaponSystem(this, this.lag);
@@ -141,11 +155,11 @@ export class GameSimulation implements GameHost {
 
   // ---------------------------------------------------------------- players
 
-  addHuman(sessionId: string, requestedName: unknown): ServerRobot {
+  addHuman(sessionId: string, requestedName: unknown, characterId?: unknown, weaponId?: unknown): ServerRobot {
     this.humanCounter += 1;
     const name = typeof requestedName === 'string' && requestedName.trim() ? requestedName.trim().slice(0, 16) : `Player ${this.humanCounter}`;
     this.removeOneBot();
-    const robot = this.spawnRobot(name, sessionId);
+    const robot = this.spawnRobot(name, sessionId, characterId, weaponId);
     this.balanceBots();
     return robot;
   }
@@ -161,7 +175,37 @@ export class GameSimulation implements GameHost {
   }
 
   welcomeFor(robot: ServerRobot): WelcomeMsg {
-    return { yourId: robot.id, serverTime: this.serverTimeMs(), tuning: { ...physicsConfig } };
+    return { yourId: robot.id, serverTime: this.serverTimeMs(), tuning: { ...physicsConfig }, mapId: this.mapId };
+  }
+
+  pickupSnapshot(): WeaponPickupState[] {
+    return this.weaponPads.map(({ pad, availableAt }) => ({
+      ...pad,
+      position: { ...pad.position },
+      available: availableAt <= this.time,
+      respawnIn: Math.max(0, Math.round((availableAt - this.time) * 10) / 10),
+    }));
+  }
+
+  private tryPickupWeapon(robot: ServerRobot): void {
+    if (!robot.alive || !this.combatEnabled()) return;
+    let nearest: { pad: WeaponPad; availableAt: number } | undefined;
+    let nearestDistance = WEAPON_PICKUP_RADIUS;
+    const position = robot.position();
+    for (const entry of this.weaponPads) {
+      if (entry.availableAt > this.time || entry.pad.weaponId === robot.weaponId) continue;
+      const d = distance(position, entry.pad.position);
+      if (d <= nearestDistance) {
+        nearest = entry;
+        nearestDistance = d;
+      }
+    }
+    if (!nearest) return;
+    robot.weaponId = nearest.pad.weaponId;
+    robot.fireCooldown = 0;
+    nearest.availableAt = this.time + WEAPON_RESPAWN_S;
+    this.emit({ k: 'weapon', id: robot.id, weaponId: robot.weaponId });
+    this.markRosterDirty();
   }
 
   humanCount(): number {
@@ -204,12 +248,13 @@ export class GameSimulation implements GameHost {
     return new Set([...this.robotMap.values()].map((r) => r.color));
   }
 
-  private spawnRobot(name: string, sessionId: string | null): ServerRobot {
+  private spawnRobot(name: string, sessionId: string | null, characterId?: unknown, weaponId?: unknown): ServerRobot {
     const used = this.usedColors();
     const color = ROBOT_COLORS.find((c) => !used.has(c)) ?? ROBOT_COLORS[this.nextRobotId % ROBOT_COLORS.length];
     const spawn = this.safestSpawn(null);
     const controller = new RobotController(this.physics.world, spawn.position, spawn.yaw);
-    const robot = new ServerRobot(this.nextRobotId++, name, color, sessionId, controller);
+    const botCharacter = (['striker', 'bulwark', 'spectre'] as const)[this.nextRobotId % 3];
+    const robot = new ServerRobot(this.nextRobotId++, name, color, sessionId, controller, sessionId === null ? botCharacter : characterId, weaponId);
     robot.recomputeStats();
     robot.hp = robot.stats.maxHp;
     robot.aimYaw = spawn.yaw;
@@ -253,9 +298,9 @@ export class GameSimulation implements GameHost {
 
   /** The spawn point farthest from every living enemy. */
   private safestSpawn(self: ServerRobot | null): SpawnPoint {
-    let best = SPAWN_POINTS[Math.floor(Math.random() * SPAWN_POINTS.length)];
+    let best = this.spawnPoints[Math.floor(Math.random() * this.spawnPoints.length)];
     let bestScore = -Infinity;
-    for (const s of SPAWN_POINTS) {
+    for (const s of this.spawnPoints) {
       let minD = Infinity;
       for (const r of this.robotMap.values()) {
         if (r === self || !r.alive) continue;
@@ -303,6 +348,9 @@ export class GameSimulation implements GameHost {
     r.aimYaw = spawn.yaw;
     r.aimPitch = 0;
     r.lastCombatTime = -1e9;
+    r.weaponId = null;
+    this.emit({ k: 'weapon', id: r.id, weaponId: null });
+    this.markRosterDirty();
     this.emit({ k: 'respawn', id: r.id, p: spawn.position, yaw: spawn.yaw });
   }
 
@@ -359,6 +407,7 @@ export class GameSimulation implements GameHost {
       const res = r.controller.drive(driveInput, dt, stunned);
       if (res.dashed) this.emit({ k: 'dash', id: r.id });
       if (!playing || stunned) continue;
+      if (r.weaponId === null || (r.freshInput && (input.buttons & Buttons.INTERACT) !== 0)) this.tryPickupWeapon(r);
       if (input.buttons & Buttons.ABILITY) this.powerups.tryAbilities(r);
       // A repeated input (gap in the client's stream) keeps driving but never fires: the client did not predict that shot.
       if (input.buttons & Buttons.FIRE && (r.isBot || r.freshInput)) this.weapons.tryFire(r, input);
@@ -433,6 +482,7 @@ export class GameSimulation implements GameHost {
         const aToward = dot(va, n);
         const bToward = -dot(vb, n);
         const [rammer, victim, dir] = aToward >= bToward ? [a, b, n] : [b, a, { x: -n.x, y: 0, z: -n.z }];
+        if (rammer.isBot && (!victim.isBot || rammer.weaponId === null)) continue;
         const dmg = (closing - cfg.ramMinSpeed) * cfg.ramDamagePerMps + 4;
         const contact = { x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2 + 0.2, z: (pa.z + pb.z) / 2 };
         const k = cfg.ramImpulse * Math.min(2.5, closing / 10);
@@ -467,10 +517,12 @@ export class GameSimulation implements GameHost {
     this.lag.clear();
     this.powerups.clear();
     this.ramCooldowns.clear();
-    const spawns = [...SPAWN_POINTS].sort(() => Math.random() - 0.5);
+    for (const entry of this.weaponPads) entry.availableAt = 0;
+    const spawns = [...this.spawnPoints].sort(() => Math.random() - 0.5);
     let i = 0;
     for (const r of this.robotMap.values()) {
       r.resetProgress();
+      this.emit({ k: 'weapon', id: r.id, weaponId: null });
       const s = spawns[i++ % spawns.length];
       r.controller.setEnabled(true);
       r.controller.teleport(s.position, s.yaw);
@@ -502,6 +554,7 @@ export class GameSimulation implements GameHost {
         left: Math.max(0, Math.round(this.phaseTimeLeft * 10) / 10),
         r: [...this.robotMap.values()].map((r) => encodeRobot(r.toNetState())),
         m: this.powerups.mineWire(),
+        pickups: this.pickupSnapshot(),
       };
       this.net.broadcast(Msg.SNAPSHOT, snap);
     }
