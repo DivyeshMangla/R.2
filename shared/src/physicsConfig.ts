@@ -1,0 +1,233 @@
+/**
+ * Every tunable physics / combat constant lives here. The object is mutable so
+ * lil-gui can edit it live; the client forwards edits to the server so the
+ * authoritative simulation and client prediction stay in agreement.
+ */
+export interface PhysicsConfig {
+  gravity: number;
+
+  // Chassis
+  chassisMass: number;
+  centerOfMassY: number;
+  linearDamping: number;
+  angularDamping: number;
+  chassisFriction: number;
+  chassisRestitution: number;
+
+  // Drivetrain
+  engineForce: number;
+  reverseFactor: number;
+  maxSpeed: number;
+  brakeForce: number;
+  rollingBrake: number;
+  maxSteerAngle: number;
+  steerSpeedFalloff: number;
+  downforce: number;
+
+  // Suspension & tyres
+  suspensionRestLength: number;
+  suspensionStiffness: number;
+  suspensionCompression: number;
+  suspensionRelaxation: number;
+  maxSuspensionTravel: number;
+  maxSuspensionForce: number;
+  wheelRadius: number;
+  frictionSlip: number;
+  sideFrictionStiffness: number;
+
+  // Boost & dash
+  boostForceMul: number;
+  boostMaxSpeedMul: number;
+  boostDrainPerSec: number;
+  boostRegenPerSec: number;
+  dashImpulse: number;
+  dashCooldown: number;
+
+  // Anti-flip
+  antiFlipDelay: number;
+  antiFlipTorque: number;
+  antiFlipLift: number;
+
+  // Weapons
+  projectileSpeed: number;
+  projectileLifetime: number;
+  projectileImpulse: number;
+  projectileDamage: number;
+  fireInterval: number;
+  twinSpread: number;
+
+  // Ramming
+  ramMinSpeed: number;
+  ramDamagePerMps: number;
+  ramSelfDamageFraction: number;
+  ramCooldown: number;
+  ramImpulse: number;
+
+  // Abilities / power-ups
+  empRadius: number;
+  empStunDuration: number;
+  empCooldown: number;
+  mineDamage: number;
+  mineBlastRadius: number;
+  mineTriggerRadius: number;
+  mineSeekRadius: number;
+  mineSpeed: number;
+  mineLifetime: number;
+  mineArmDelay: number;
+  mineImpulse: number;
+
+  // Death debris
+  debrisImpulse: number;
+  debrisLifetime: number;
+}
+
+export const DEFAULT_PHYSICS_CONFIG: Readonly<PhysicsConfig> = Object.freeze({
+  gravity: 9.81 * 1.6,
+
+  chassisMass: 360,
+  centerOfMassY: -0.38,
+  linearDamping: 0.05,
+  angularDamping: 0.9,
+  chassisFriction: 0.4,
+  chassisRestitution: 0.15,
+
+  engineForce: 5200,
+  reverseFactor: 0.65,
+  maxSpeed: 21,
+  brakeForce: 24,
+  rollingBrake: 1.6,
+  maxSteerAngle: 0.55,
+  steerSpeedFalloff: 0.045,
+  downforce: 0.35,
+
+  suspensionRestLength: 0.32,
+  suspensionStiffness: 34,
+  suspensionCompression: 3.2,
+  suspensionRelaxation: 3.8,
+  maxSuspensionTravel: 0.3,
+  maxSuspensionForce: 60000,
+  wheelRadius: 0.38,
+  frictionSlip: 2.6,
+  sideFrictionStiffness: 1.0,
+
+  boostForceMul: 1.75,
+  boostMaxSpeedMul: 1.4,
+  boostDrainPerSec: 38,
+  boostRegenPerSec: 16,
+  dashImpulse: 11,
+  dashCooldown: 6,
+
+  antiFlipDelay: 1.5,
+  antiFlipTorque: 14,
+  antiFlipLift: 19,
+
+  projectileSpeed: 62,
+  projectileLifetime: 1.6,
+  projectileImpulse: 1050,
+  projectileDamage: 17,
+  fireInterval: 0.42,
+  twinSpread: 0.07,
+
+  ramMinSpeed: 7,
+  ramDamagePerMps: 2.6,
+  ramSelfDamageFraction: 0.25,
+  ramCooldown: 0.6,
+  ramImpulse: 900,
+
+  empRadius: 11,
+  empStunDuration: 1.5,
+  empCooldown: 15,
+  mineDamage: 34,
+  mineBlastRadius: 4.2,
+  mineTriggerRadius: 2.3,
+  mineSeekRadius: 15,
+  mineSpeed: 6.5,
+  mineLifetime: 12,
+  mineArmDelay: 0.8,
+  mineImpulse: 1800,
+
+  debrisImpulse: 9,
+  debrisLifetime: 5,
+});
+
+export const physicsConfig: PhysicsConfig = { ...DEFAULT_PHYSICS_CONFIG };
+
+export type PhysicsConfigKey = keyof PhysicsConfig;
+
+/** [min, max, step] ranges for live tuning; also used to validate remote edits. */
+export const PHYSICS_CONFIG_RANGES: Readonly<Record<PhysicsConfigKey, readonly [number, number, number]>> = {
+  gravity: [2, 40, 0.1],
+  chassisMass: [80, 1500, 10],
+  centerOfMassY: [-1, 0.4, 0.01],
+  linearDamping: [0, 2, 0.01],
+  angularDamping: [0, 6, 0.05],
+  chassisFriction: [0, 2, 0.01],
+  chassisRestitution: [0, 1, 0.01],
+  engineForce: [500, 20000, 50],
+  reverseFactor: [0.1, 1.5, 0.01],
+  maxSpeed: [5, 60, 0.5],
+  brakeForce: [0, 120, 1],
+  rollingBrake: [0, 20, 0.1],
+  maxSteerAngle: [0.1, 1.0, 0.01],
+  steerSpeedFalloff: [0, 0.3, 0.005],
+  downforce: [0, 3, 0.01],
+  suspensionRestLength: [0.05, 0.8, 0.01],
+  suspensionStiffness: [5, 120, 0.5],
+  suspensionCompression: [0.1, 15, 0.05],
+  suspensionRelaxation: [0.1, 15, 0.05],
+  maxSuspensionTravel: [0.05, 1, 0.01],
+  maxSuspensionForce: [1000, 200000, 500],
+  wheelRadius: [0.2, 0.7, 0.01],
+  frictionSlip: [0.2, 12, 0.05],
+  sideFrictionStiffness: [0.1, 4, 0.05],
+  boostForceMul: [1, 4, 0.05],
+  boostMaxSpeedMul: [1, 3, 0.05],
+  boostDrainPerSec: [1, 200, 1],
+  boostRegenPerSec: [1, 200, 1],
+  dashImpulse: [0, 40, 0.5],
+  dashCooldown: [0.5, 30, 0.5],
+  antiFlipDelay: [0.1, 5, 0.05],
+  antiFlipTorque: [0, 60, 0.5],
+  antiFlipLift: [0, 60, 0.5],
+  projectileSpeed: [10, 200, 1],
+  projectileLifetime: [0.2, 5, 0.05],
+  projectileImpulse: [0, 6000, 25],
+  projectileDamage: [1, 100, 1],
+  fireInterval: [0.05, 2, 0.01],
+  twinSpread: [0, 0.4, 0.005],
+  ramMinSpeed: [0, 30, 0.5],
+  ramDamagePerMps: [0, 20, 0.1],
+  ramSelfDamageFraction: [0, 1, 0.01],
+  ramCooldown: [0.05, 3, 0.05],
+  ramImpulse: [0, 5000, 25],
+  empRadius: [1, 40, 0.5],
+  empStunDuration: [0.1, 5, 0.05],
+  empCooldown: [1, 60, 0.5],
+  mineDamage: [1, 150, 1],
+  mineBlastRadius: [0.5, 15, 0.1],
+  mineTriggerRadius: [0.5, 10, 0.1],
+  mineSeekRadius: [1, 50, 0.5],
+  mineSpeed: [0, 30, 0.5],
+  mineLifetime: [1, 60, 0.5],
+  mineArmDelay: [0, 5, 0.05],
+  mineImpulse: [0, 8000, 50],
+  debrisImpulse: [0, 40, 0.5],
+  debrisLifetime: [0.5, 20, 0.5],
+};
+
+export function isPhysicsConfigKey(key: string): key is PhysicsConfigKey {
+  return Object.prototype.hasOwnProperty.call(DEFAULT_PHYSICS_CONFIG, key);
+}
+
+/** Validates and applies a tuning edit. Returns the clamped applied value, or null if rejected. */
+export function applyPhysicsTuning(key: string, value: unknown): number | null {
+  if (!isPhysicsConfigKey(key) || typeof value !== 'number' || !Number.isFinite(value)) return null;
+  const [min, max] = PHYSICS_CONFIG_RANGES[key];
+  const v = Math.min(max, Math.max(min, value));
+  physicsConfig[key] = v;
+  return v;
+}
+
+export function replacePhysicsConfig(values: Partial<Record<string, unknown>>): void {
+  for (const [k, v] of Object.entries(values)) applyPhysicsTuning(k, v);
+}
