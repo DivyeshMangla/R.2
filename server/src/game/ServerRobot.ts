@@ -51,6 +51,8 @@ export class ServerRobot {
   readonly inputQueue: InputFrame[] = [];
   lastInput: InputFrame = emptyInput();
   lastProcessedSeq = 0;
+  /** True when this tick's input was newly received (not a repeat of the last one during an input gap). */
+  freshInput = false;
   aimYaw = 0;
   aimPitch = 0;
 

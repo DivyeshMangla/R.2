@@ -29,6 +29,9 @@ export class RobotVisual {
   readonly quaternion = new THREE.Quaternion();
   readonly velocity = new THREE.Vector3();
   aimYaw = 0;
+  /** Target barrel pitch (radians, up positive); `barrelPitch` is the smoothed value that is drawn. */
+  aimPitch = 0;
+  barrelPitch = 0;
   steerInput = 0;
   flags = 0;
   hp = 100;
@@ -125,6 +128,9 @@ export class RobotVisual {
   update(dt: number, leanStrength: number): void {
     if (dt <= 0) return;
     const cfg = physicsConfig;
+
+    // Barrel pitch follows the aim with a 25 ms time constant (~95% within 75 ms).
+    this.barrelPitch += (this.aimPitch - this.barrelPitch) * (1 - Math.exp(-dt / 0.025));
 
     // Local-frame acceleration → target lean (nose dips under braking, body rolls out of turns).
     _invQ.copy(this.quaternion).invert();

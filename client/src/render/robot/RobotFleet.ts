@@ -282,7 +282,11 @@ export class RobotFleet {
 
     const heavy = v.stacks.heavy_rounds ?? 0;
     const radial = 1 + heavy * 0.15;
-    _m.compose(_v.set(BARREL_MOUNT.x, BARREL_MOUNT.y, BARREL_MOUNT.z + v.recoil), _q.identity(), _s.set(radial, radial, 1 + heavy * 0.03));
+    // Barrel hinges at BARREL_MOUNT and pitches about turret-local X (+pitch = muzzle up), as in shared/aim.ts.
+    _q.setFromAxisAngle(X_AXIS, -v.barrelPitch);
+    _m.compose(_v.set(BARREL_MOUNT.x, BARREL_MOUNT.y, BARREL_MOUNT.z), _q, _s.set(radial, radial, 1 + heavy * 0.03));
+    _m2.makeTranslation(0, 0, v.recoil);
+    _m.multiply(_m2);
     mats.barrel.multiplyMatrices(mats.turret, _m);
 
     const grip = v.stacks.grip_tires ?? 0;

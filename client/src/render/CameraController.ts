@@ -1,14 +1,15 @@
 import * as THREE from 'three';
+import { aimDirection, cameraOrigin, DEFAULT_CAMERA_RIG, type Vec3 } from '@robot-arena/shared';
 
 export interface CameraTuning {
+  /** Orbit rig (see shared/aim.ts cameraOrigin). */
   distance: number;
   height: number;
+  lookHeight: number;
   /** Spring stiffness (1/s²) of the follow spring. */
   stiffness: number;
   /** Damping ratio of the follow spring (1 = critical). */
   damping: number;
-  lookAhead: number;
-  lookHeight: number;
   fov: number;
   boostFov: number;
   fovLerp: number;
@@ -18,15 +19,19 @@ export interface CameraTuning {
   shakeFrequency: number;
 }
 
-/** Third-person chase camera: damped spring follow, velocity look-ahead, FOV boost, trauma shake. */
+/**
+ * Third-person orbit camera. The mouse sets the view yaw/pitch; the camera
+ * position spring-follows the shared rig and always looks exactly along the
+ * view direction, so the screen centre is a known ray (aimOrigin/aimDir,
+ * captured before shake) that the aim solver can use.
+ */
 export class CameraController {
   readonly tuning: CameraTuning = {
-    distance: 8.2,
-    height: 3.2,
+    distance: DEFAULT_CAMERA_RIG.distance,
+    height: DEFAULT_CAMERA_RIG.height,
+    lookHeight: DEFAULT_CAMERA_RIG.lookHeight,
     stiffness: 70,
     damping: 1.0,
-    lookAhead: 0.28,
-    lookHeight: 1.3,
     fov: 70,
     boostFov: 82,
     fovLerp: 6,
@@ -38,9 +43,13 @@ export class CameraController {
   private trauma = 0;
   private readonly pos = new THREE.Vector3(0, 10, -20);
   private readonly vel = new THREE.Vector3();
-  private readonly look = new THREE.Vector3();
-  private readonly lookVel = new THREE.Vector3();
   private initialized = false;
+  /** Unshaken screen-centre ray of the last update (world space). */
+  readonly aimOrigin: Vec3 = { x: 0, y: 0, z: 0 };
+  readonly aimDir: Vec3 = { x: 0, y: 0, z: 1 };
+  private readonly desired: Vec3 = { x: 0, y: 0, z: 0 };
+  private readonly desiredV = new THREE.Vector3();
+  private readonly lookAt = new THREE.Vector3();
   private time = 0;
   private readonly camera: THREE.PerspectiveCamera;
 
@@ -74,33 +83,29 @@ export class CameraController {
     }
   }
 
-  update(target: THREE.Vector3, velocity: THREE.Vector3, aimYaw: number, pitch: number, boosting: boolean, dt: number): void {
+  update(target: THREE.Vector3, viewYaw: number, viewPitch: number, boosting: boolean, dt: number): void {
     const t = this.tuning;
     this.time += dt;
-    const back = new THREE.Vector3(-Math.sin(aimYaw), 0, -Math.cos(aimYaw));
-    const dist = t.distance * (boosting ? 1.08 : 1);
-    const height = t.height + pitch * 6;
-    const desired = target.clone().addScaledVector(back, dist * Math.cos(pitch * 0.6)).add(new THREE.Vector3(0, height, 0));
-    const ahead = velocity.clone().setY(0);
-    if (ahead.length() > 30) ahead.setLength(30);
-    const lookTarget = target.clone().addScaledVector(ahead, t.lookAhead).add(new THREE.Vector3(0, t.lookHeight, 0));
-    lookTarget.addScaledVector(back, -4);
+    const rig = { distance: t.distance * (boosting ? 1.08 : 1), height: t.height, lookHeight: t.lookHeight };
+    cameraOrigin(target, viewYaw, viewPitch, rig, this.desired);
+    this.desiredV.set(this.desired.x, this.desired.y, this.desired.z);
 
     if (!this.initialized) {
-      this.pos.copy(desired);
-      this.look.copy(lookTarget);
+      this.pos.copy(this.desiredV);
       this.vel.set(0, 0, 0);
-      this.lookVel.set(0, 0, 0);
       this.initialized = true;
     }
-    this.spring(this.pos, this.vel, desired, dt, t.stiffness);
-    this.spring(this.look, this.lookVel, lookTarget, dt, t.stiffness * 2.2);
+    this.spring(this.pos, this.vel, this.desiredV, dt, t.stiffness);
     // Never drop below the floor.
     this.pos.y = Math.max(this.pos.y, 0.6);
 
     const cam = this.camera;
+    aimDirection(viewYaw, viewPitch, this.aimDir);
     cam.position.copy(this.pos);
-    cam.lookAt(this.look);
+    cam.lookAt(this.lookAt.set(this.pos.x + this.aimDir.x, this.pos.y + this.aimDir.y, this.pos.z + this.aimDir.z));
+    this.aimOrigin.x = this.pos.x;
+    this.aimOrigin.y = this.pos.y;
+    this.aimOrigin.z = this.pos.z;
 
     // Trauma shake (smooth pseudo-noise from layered sines).
     this.trauma = Math.max(0, this.trauma - t.shakeDecay * dt);

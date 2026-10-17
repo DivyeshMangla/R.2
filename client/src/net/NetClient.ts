@@ -12,10 +12,24 @@ import {
   type PongMsg,
   type ResultsMsg,
   type RosterMsg,
+  type ShotResultMsg,
   type SnapshotMsg,
   type TuneMsg,
+  type InputWire,
   type WelcomeMsg,
 } from '@robot-arena/shared';
+
+/** Artificial network conditions for testing (applied on this client only, both directions). */
+export interface NetSimSettings {
+  /** Extra one-way delay added to every message, ms (so RTT grows by twice this). */
+  latencyMs: number;
+  jitterMs: number;
+  /** Probability [0,1] that an outgoing input packet is dropped. */
+  inputLoss: number;
+}
+
+/** Inputs per packet: the newest plus the previous ones, so one lost packet never drops a trigger pull. */
+const REDUNDANT_INPUTS = 3;
 
 export interface NetHandlers {
   onWelcome(msg: WelcomeMsg): void;
@@ -25,12 +39,15 @@ export interface NetHandlers {
   onCards(msg: CardOfferMsg): void;
   onCardsResolved(msg: CardResolvedMsg): void;
   onResults(msg: ResultsMsg): void;
+  onShotResult(msg: ShotResultMsg): void;
   onDisconnect(reason: string): void;
 }
 
 /** Thin Colyseus wrapper: input upload, clock sync via ping/pong, typed message routing. */
 export class NetClient {
   rtt = 0;
+  readonly sim: NetSimSettings = { latencyMs: 0, jitterMs: 0, inputLoss: 0 };
+  private readonly recentInputs: InputWire[] = [];
   /** serverTime ≈ performance.now() + clockOffset */
   private clockOffset = 0;
   private hasClock = false;
@@ -52,20 +69,21 @@ export class NetClient {
     const room = await client.joinOrCreate(ROOM_NAME, { name });
     this.room = room;
     const h = this.handlers;
-    room.onMessage(Msg.WELCOME, (m: WelcomeMsg) => {
+    room.onMessage(Msg.WELCOME, (m: WelcomeMsg) => this.delayed(() => {
       this.observeServerTime(m.serverTime);
       h.onWelcome(m);
-    });
-    room.onMessage(Msg.SNAPSHOT, (m: SnapshotMsg) => {
+    }));
+    room.onMessage(Msg.SNAPSHOT, (m: SnapshotMsg) => this.delayed(() => {
       this.observeServerTime(m.t);
       h.onSnapshot(m);
-    });
-    room.onMessage(Msg.ROSTER, (m: RosterMsg) => h.onRoster(m));
-    room.onMessage(Msg.EVENTS, (m: EventsMsg) => h.onEvents(m));
-    room.onMessage(Msg.CARDS, (m: CardOfferMsg) => h.onCards(m));
-    room.onMessage(Msg.CARDS_RESOLVED, (m: CardResolvedMsg) => h.onCardsResolved(m));
-    room.onMessage(Msg.RESULTS, (m: ResultsMsg) => h.onResults(m));
-    room.onMessage(Msg.PONG, (m: PongMsg) => this.onPong(m));
+    }));
+    room.onMessage(Msg.ROSTER, (m: RosterMsg) => this.delayed(() => h.onRoster(m)));
+    room.onMessage(Msg.EVENTS, (m: EventsMsg) => this.delayed(() => h.onEvents(m)));
+    room.onMessage(Msg.CARDS, (m: CardOfferMsg) => this.delayed(() => h.onCards(m)));
+    room.onMessage(Msg.CARDS_RESOLVED, (m: CardResolvedMsg) => this.delayed(() => h.onCardsResolved(m)));
+    room.onMessage(Msg.RESULTS, (m: ResultsMsg) => this.delayed(() => h.onResults(m)));
+    room.onMessage(Msg.SHOT_RESULT, (m: ShotResultMsg) => this.delayed(() => h.onShotResult(m)));
+    room.onMessage(Msg.PONG, (m: PongMsg) => this.delayed(() => this.onPong(m)));
     room.onLeave((code: number) => {
       this.room = null;
       window.clearInterval(this.pingTimer);
@@ -80,7 +98,13 @@ export class NetClient {
   }
 
   sendInput(frame: InputFrame): void {
-    this.room?.send(Msg.INPUT, encodeInput(frame));
+    const recent = this.recentInputs;
+    recent.push(encodeInput(frame));
+    if (recent.length > REDUNDANT_INPUTS) recent.shift();
+    if (this.sim.inputLoss > 0 && Math.random() < this.sim.inputLoss) return;
+    // Oldest first; the server discards seqs it has already queued.
+    const packet = recent.slice();
+    this.delayed(() => this.room?.send(Msg.INPUT, packet));
   }
 
   sendPick(offerId: number, index: number): void {
@@ -94,7 +118,15 @@ export class NetClient {
   }
 
   private ping(): void {
-    this.room?.send(Msg.PING, { c: performance.now() });
+    const c = performance.now();
+    this.delayed(() => this.room?.send(Msg.PING, { c }));
+  }
+
+  /** Runs `fn` now, or after the simulated one-way delay. */
+  private delayed(fn: () => void): void {
+    const ms = this.sim.latencyMs + (this.sim.jitterMs > 0 ? Math.random() * this.sim.jitterMs : 0);
+    if (ms <= 0) fn();
+    else window.setTimeout(fn, ms);
   }
 
   private onPong(m: PongMsg): void {

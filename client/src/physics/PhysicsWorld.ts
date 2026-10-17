@@ -23,7 +23,7 @@ interface Proxy {
  */
 export class PhysicsWorld {
   readonly world: World;
-  private readonly envHandles: Set<number>;
+  private readonly envHandles: ReadonlyMap<number, unknown>;
   private readonly proxies = new Map<number, Proxy>();
   private readonly ownerByCollider = new Map<number, number>();
 

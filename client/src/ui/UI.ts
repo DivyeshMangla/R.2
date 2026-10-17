@@ -287,9 +287,17 @@ export class UI {
     this.hitmarker.style.top = `${y}px`;
   }
 
-  showHitmarker(): void {
-    this.hitTimer = 0.12;
+  /** 'enemy' = the aim ray is on an enemy; 'clamped' = the barrel cannot pitch far enough to reach the point. */
+  setCrosshairState(state: 'none' | 'enemy' | 'clamped'): void {
+    this.crosshair.classList.toggle('enemy', state === 'enemy');
+    this.crosshair.classList.toggle('clamped', state === 'clamped');
+  }
+
+  /** Server-confirmed hit (kill = larger, longer marker). */
+  showHitmarker(kill = false): void {
+    this.hitTimer = kill ? 0.35 : 0.12;
     this.hitmarker.classList.add('show');
+    this.hitmarker.classList.toggle('kill', kill);
     this.crosshair.classList.add('hit');
   }
 
@@ -392,7 +400,7 @@ export class UI {
     if (this.hitTimer > 0) {
       this.hitTimer -= dt;
       if (this.hitTimer <= 0) {
-        this.hitmarker.classList.remove('show');
+        this.hitmarker.classList.remove('show', 'kill');
         this.crosshair.classList.remove('hit');
       }
     }

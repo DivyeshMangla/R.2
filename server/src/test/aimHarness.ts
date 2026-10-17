@@ -17,6 +17,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   aimDirection,
+  BARREL_HINGE_FWD,
   buildArenaColliders,
   Buttons,
   cameraOrigin,
@@ -33,6 +34,7 @@ import {
   makeHitTarget,
   makeStepResult,
   Msg,
+  MUZZLE_DISTANCE,
   physicsConfig,
   quatFromYaw,
   RobotController,
@@ -284,7 +286,7 @@ function runScenario(sc: Scenario, rttMs: number): RunResult {
       if (sc.moving) {
         const base = { ...aimAt };
         for (let it = 0; it < 4; it++) {
-          const tFlight = (Math.hypot(aimAt.x - pivot.x, aimAt.y - pivot.y, aimAt.z - pivot.z) - 1.7) / physicsConfig.projectileSpeed;
+          const tFlight = (Math.hypot(aimAt.x - pivot.x, aimAt.y - pivot.y, aimAt.z - pivot.z) - BARREL_HINGE_FWD - MUZZLE_DISTANCE) / physicsConfig.projectileSpeed;
           aimAt.x = base.x + seen.v.x * tFlight;
           aimAt.z = base.z + seen.v.z * tFlight;
         }

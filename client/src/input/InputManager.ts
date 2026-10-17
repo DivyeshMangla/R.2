@@ -8,16 +8,21 @@ export interface InputSettings {
 type KeyHandler = (code: string, e: KeyboardEvent) => void;
 
 /**
- * Keyboard + pointer-lock mouse. Owns the turret aim yaw and the camera pitch,
- * and produces compact InputFrames for each fixed simulation tick.
+ * Keyboard + pointer-lock mouse. The mouse steers the *view* (camera orbit
+ * yaw/pitch); turret yaw/pitch are solved from the screen-centre ray by
+ * Game (shared/aim.ts solveAim) and written into the frame before sending.
  */
 export class InputManager {
   readonly settings: InputSettings = { mouseSensitivity: 0.0022, invertY: false };
-  aimYaw = 0;
-  cameraPitch = 0.22;
+  /** Camera orbit yaw (world, same convention as aim yaw). */
+  viewYaw = 0;
+  /** Camera orbit pitch, radians, positive = looking up. */
+  viewPitch = -0.12;
 
   private readonly keys = new Set<string>();
   private mouseDown = false;
+  /** A click that started and ended between two ticks still fires once. */
+  private fireLatched = false;
   private seq = 0;
   private locked = false;
   private readonly keyHandlers: KeyHandler[] = [];
@@ -52,21 +57,23 @@ export class InputManager {
     return this.keys.has(code);
   }
 
-  /** Builds the next input frame (increments the sequence number). */
+  /** Builds the next input frame (increments the sequence number). Aim fields are filled by the caller. */
   sample(): InputFrame {
     const k = this.keys;
     const fwd = (k.has('KeyW') || k.has('ArrowUp') ? 1 : 0) - (k.has('KeyS') || k.has('ArrowDown') ? 1 : 0);
     const steer = (k.has('KeyD') || k.has('ArrowRight') ? 1 : 0) - (k.has('KeyA') || k.has('ArrowLeft') ? 1 : 0);
     let buttons = 0;
-    if (this.mouseDown) buttons |= Buttons.FIRE;
+    if (this.mouseDown || this.fireLatched) buttons |= Buttons.FIRE;
+    this.fireLatched = false;
     if (k.has('ShiftLeft') || k.has('ShiftRight')) buttons |= Buttons.BOOST;
     if (k.has('Space')) buttons |= Buttons.ABILITY;
     this.seq += 1;
-    return { seq: this.seq, throttle: fwd, steer, aimYaw: this.aimYaw, buttons };
+    return { seq: this.seq, throttle: fwd, steer, aimYaw: this.viewYaw, buttons, aimPitch: 0, viewT: 0 };
   }
 
   resetAim(yaw: number): void {
-    this.aimYaw = yaw;
+    this.viewYaw = yaw;
+    this.viewPitch = -0.12;
   }
 
   private readonly onKeyDown = (e: KeyboardEvent): void => {
@@ -83,10 +90,14 @@ export class InputManager {
   private readonly onBlur = (): void => {
     this.keys.clear();
     this.mouseDown = false;
+    this.fireLatched = false;
   };
 
   private readonly onMouseDown = (e: MouseEvent): void => {
-    if (e.button === 0) this.mouseDown = true;
+    if (e.button === 0 && this.locked) {
+      this.mouseDown = true;
+      this.fireLatched = true;
+    }
   };
 
   private readonly onMouseUp = (e: MouseEvent): void => {
@@ -96,11 +107,12 @@ export class InputManager {
   private readonly onMouseMove = (e: MouseEvent): void => {
     if (!this.locked) return;
     const s = this.settings.mouseSensitivity;
-    // Mouse right turns the aim right, which is negative yaw (see shared/math.ts).
-    this.aimYaw -= e.movementX * s;
-    this.cameraPitch = clamp(this.cameraPitch + e.movementY * s * (this.settings.invertY ? -1 : 1), -0.25, 0.85);
-    if (this.aimYaw > Math.PI) this.aimYaw -= Math.PI * 2;
-    if (this.aimYaw < -Math.PI) this.aimYaw += Math.PI * 2;
+    // Mouse right turns the view right, which is negative yaw (see shared/math.ts).
+    this.viewYaw -= e.movementX * s;
+    // Mouse up looks up (unless inverted).
+    this.viewPitch = clamp(this.viewPitch - e.movementY * s * (this.settings.invertY ? -1 : 1), -0.75, 0.6);
+    if (this.viewYaw > Math.PI) this.viewYaw -= Math.PI * 2;
+    if (this.viewYaw < -Math.PI) this.viewYaw += Math.PI * 2;
   };
 
   private readonly onLockChange = (): void => {

@@ -4,30 +4,30 @@ Aim assist ON (defaults)
 
 scenario                RTT   hits     rate    steady-motion  client-saw-hit  server-agreed  false+  |vErr| m  rewind ms  assisted  misses
 --------------------------------------------------------------------------------------------------------------------------------------------------
-flat 5 m                  0  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.116       83        0    -   PASS
-flat 5 m                100  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.116      133        0    -   PASS
-flat 5 m                200  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.116      183        0    -   PASS
+flat 5 m                  0  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.114       83        0    -   PASS
+flat 5 m                100  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.114      133        0    -   PASS
+flat 5 m                200  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.114      183        0    -   PASS
 flat 15 m                 0  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.109       83        0    -   PASS
 flat 15 m               100  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.109      133        0    -   PASS
 flat 15 m               200  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.109      183        0    -   PASS
 flat 30 m                 0  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.065       83        0    -   PASS
 flat 30 m               100  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.065      133        0    -   PASS
 flat 30 m               200  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.065      183        0    -   PASS
-platform -> floor         0  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.048       83        0    -   PASS
-platform -> floor       100  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.048      133        0    -   PASS
-platform -> floor       200  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.048      183        0    -   PASS
-floor -> platform         0  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.137       83        0    -   PASS
-floor -> platform       100  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.137      133        0    -   PASS
-floor -> platform       200  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.137      183        0    -   PASS
-mid-ramp -> floor         0  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.111       83        0    -   PASS
-mid-ramp -> floor       100  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.111      133        0    -   PASS
-mid-ramp -> floor       200  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.111      183        0    -   PASS
+platform -> floor         0  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.046       83        0    -   PASS
+platform -> floor       100  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.046      133        0    -   PASS
+platform -> floor       200  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.046      183        0    -   PASS
+floor -> platform         0  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.140       83        0    -   PASS
+floor -> platform       100  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.140      133        0    -   PASS
+floor -> platform       200  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.140      183        0    -   PASS
+mid-ramp -> floor         0  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.109       83        0    -   PASS
+mid-ramp -> floor       100  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.109      133        0    -   PASS
+mid-ramp -> floor       200  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.109      183        0    -   PASS
 low profile (cover)       0  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.051       83        0    -   PASS
 low profile (cover)     100  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.051      133        0    -   PASS
 low profile (cover)     200  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.051      183        0    -   PASS
-moving 21 m/s @ 15 m      0   83/100   83.0%    48/48 100.0%        83         100.0%          0     0.237       83        5    no contact:16 passed over:1   PASS
-moving 21 m/s @ 15 m    100   83/100   83.0%    48/48 100.0%        83         100.0%          0     0.237      133        5    no contact:16 passed over:1   PASS
-moving 21 m/s @ 15 m    200   80/100   80.0%    49/49 100.0%        80         100.0%          0     0.245      183        5    no contact:19 passed over:1   PASS
+moving 21 m/s @ 15 m      0   84/100   84.0%    48/48 100.0%        84         100.0%          0     0.233       83        5    no contact:16   PASS
+moving 21 m/s @ 15 m    100   84/100   84.0%    48/48 100.0%        84         100.0%          0     0.233      133        5    no contact:16   PASS
+moving 21 m/s @ 15 m    200   81/100   81.0%    49/49 100.0%        81         100.0%          0     0.241      183        5    no contact:19   PASS
 
 Bars: static >= 98% hits. Moving: >= 90% of steady-motion shots hit (target did not turn around between the client's velocity estimate and impact), >= 90% of shots the shooter's own screen showed hitting are confirmed, <= 5% false positives.
 Misses outside the steady subset are lead errors at the path turnaround; the client-side prediction misses them too.
@@ -36,30 +36,30 @@ Aim assist OFF
 
 scenario                RTT   hits     rate    steady-motion  client-saw-hit  server-agreed  false+  |vErr| m  rewind ms  assisted  misses
 --------------------------------------------------------------------------------------------------------------------------------------------------
-flat 5 m                  0  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.116       83        0    -   PASS
-flat 5 m                100  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.116      133        0    -   PASS
-flat 5 m                200  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.116      183        0    -   PASS
+flat 5 m                  0  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.114       83        0    -   PASS
+flat 5 m                100  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.114      133        0    -   PASS
+flat 5 m                200  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.114      183        0    -   PASS
 flat 15 m                 0  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.109       83        0    -   PASS
 flat 15 m               100  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.109      133        0    -   PASS
 flat 15 m               200  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.109      183        0    -   PASS
 flat 30 m                 0  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.065       83        0    -   PASS
 flat 30 m               100  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.065      133        0    -   PASS
 flat 30 m               200  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.065      183        0    -   PASS
-platform -> floor         0  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.048       83        0    -   PASS
-platform -> floor       100  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.048      133        0    -   PASS
-platform -> floor       200  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.048      183        0    -   PASS
-floor -> platform         0  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.137       83        0    -   PASS
-floor -> platform       100  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.137      133        0    -   PASS
-floor -> platform       200  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.137      183        0    -   PASS
-mid-ramp -> floor         0  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.111       83        0    -   PASS
-mid-ramp -> floor       100  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.111      133        0    -   PASS
-mid-ramp -> floor       200  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.111      183        0    -   PASS
+platform -> floor         0  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.046       83        0    -   PASS
+platform -> floor       100  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.046      133        0    -   PASS
+platform -> floor       200  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.046      183        0    -   PASS
+floor -> platform         0  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.140       83        0    -   PASS
+floor -> platform       100  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.140      133        0    -   PASS
+floor -> platform       200  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.140      183        0    -   PASS
+mid-ramp -> floor         0  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.109       83        0    -   PASS
+mid-ramp -> floor       100  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.109      133        0    -   PASS
+mid-ramp -> floor       200  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.109      183        0    -   PASS
 low profile (cover)       0  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.051       83        0    -   PASS
 low profile (cover)     100  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.051      133        0    -   PASS
 low profile (cover)     200  100/100  100.0%  100/100 100.0%       100         100.0%          0     0.051      183        0    -   PASS
-moving 21 m/s @ 15 m      0   78/100   78.0%    48/48 100.0%        78         100.0%          0     0.237       83        0    no contact:16 passed over:6   PASS
-moving 21 m/s @ 15 m    100   78/100   78.0%    48/48 100.0%        78         100.0%          0     0.237      133        0    no contact:16 passed over:6   PASS
-moving 21 m/s @ 15 m    200   75/100   75.0%    49/49 100.0%        76          98.7%          0     0.245      183        0    no contact:19 passed over:6   PASS
+moving 21 m/s @ 15 m      0   79/100   79.0%    48/48 100.0%        79         100.0%          0     0.233       83        0    no contact:16 passed over:5   PASS
+moving 21 m/s @ 15 m    100   79/100   79.0%    48/48 100.0%        79         100.0%          0     0.233      133        0    no contact:16 passed over:5   PASS
+moving 21 m/s @ 15 m    200   76/100   76.0%    49/49 100.0%        76         100.0%          0     0.241      183        0    no contact:19 passed over:5   PASS
 
 Bars: static >= 98% hits. Moving: >= 90% of steady-motion shots hit (target did not turn around between the client's velocity estimate and impact), >= 90% of shots the shooter's own screen showed hitting are confirmed, <= 5% false positives.
 Misses outside the steady subset are lead errors at the path turnaround; the client-side prediction misses them too.

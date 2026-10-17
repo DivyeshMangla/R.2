@@ -366,6 +366,31 @@ body {
   opacity: 1;
   transition: none;
 }
+.hitmarker.kill {
+  width: 46px;
+  height: 46px;
+  border-color: #ff5a7a;
+  border-width: 3px;
+}
+.crosshair.enemy::before,
+.crosshair.enemy::after {
+  background: #ff3b5c;
+  box-shadow: 0 0 5px rgba(255, 59, 92, 0.9);
+}
+/* Out of the barrel's pitch range: the shot will not go where the crosshair is. */
+.crosshair.clamped {
+  opacity: 0.55;
+}
+.crosshair.clamped::before,
+.crosshair.clamped::after {
+  background: #ffb020;
+  box-shadow: none;
+}
+.crosshair.clamped {
+  outline: 1px dashed rgba(255, 176, 32, 0.8);
+  outline-offset: 4px;
+  border-radius: 50%;
+}
 .center-msg {
   position: absolute;
   top: 34%;

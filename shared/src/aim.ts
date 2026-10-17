@@ -6,21 +6,25 @@ import { TWIN_BARREL_OFFSET } from './robotController';
 
 /**
  * Turret geometry shared by the server (where shots spawn), the client (where
- * the barrel is drawn and the aim is solved) and the test harness.
+ * the barrel is drawn and the aim is solved) and the test harness. It matches
+ * the drawn robot (client/render/robot: TURRET_MOUNT, BARREL_MOUNT, BARREL_TIP_Z).
  *
  * The turret ring sits on the chassis at TURRET_RING_Y (chassis space). The
- * head stays level in world space, so the barrel hinge is TURRET_HEAD_Y
- * straight up from the ring. Shells leave MUZZLE_DISTANCE along the aim
- * direction from that hinge, i.e. the muzzle always lies on the line from the
- * hinge to the aim point, so a shell passes exactly through the crosshair.
+ * head stays level in world space and yaws about the turret axis; the barrel
+ * hinge is TURRET_HEAD_Y above the ring and BARREL_HINGE_FWD ahead of the axis
+ * along the aim yaw. Shells leave MUZZLE_DISTANCE along the aim direction from
+ * that hinge. Yaw is solved from the axis and pitch from the hinge, so the
+ * muzzle always lies on the hinge -> aim point line and a shell passes exactly
+ * through the crosshair point.
  */
 export const TURRET_RING_Y = 0.5;
 export const TURRET_HEAD_Y = 0.26;
-export const MUZZLE_DISTANCE = 1.7;
+export const BARREL_HINGE_FWD = 0.4;
+export const MUZZLE_DISTANCE = 1.43;
 
 const DEG = Math.PI / 180;
 
-/** World-space barrel hinge for a chassis pose. */
+/** World-space point on the turret axis at hinge height (the reference for aim yaw). */
 export function getTurretPivot(p: Vec3, q: Quat, out: Vec3): Vec3 {
   _l.x = 0; _l.y = TURRET_RING_Y; _l.z = 0;
   rotateInto(q, _l, out);
@@ -43,21 +47,29 @@ export function clampAimPitch(pitch: number): number {
   return clamp(pitch, physicsConfig.aimPitchMinDeg * DEG, physicsConfig.aimPitchMaxDeg * DEG);
 }
 
-/** Lateral barrel offset for barrel `index` of `count`. */
-function barrelLateral(index: number, count: number): number {
+/** Barrel offset along turret-local X for barrel `index` of `count` (index 0 = -X = right side, as drawn). */
+export function barrelLateral(index: number, count: number): number {
   if (count <= 1) return 0;
   return (index / (count - 1) - 0.5) * 2 * TWIN_BARREL_OFFSET;
 }
 
+/** World-space barrel hinge for an aim yaw. */
+export function getBarrelHinge(p: Vec3, q: Quat, yaw: number, out: Vec3): Vec3 {
+  getTurretPivot(p, q, out);
+  out.x += Math.sin(yaw) * BARREL_HINGE_FWD;
+  out.z += Math.cos(yaw) * BARREL_HINGE_FWD;
+  return out;
+}
+
 /** World-space muzzle of barrel `index` (of `count`). */
 export function getMuzzlePosition(p: Vec3, q: Quat, yaw: number, pitch: number, index: number, count: number, out: Vec3): Vec3 {
-  getTurretPivot(p, q, out);
+  getBarrelHinge(p, q, yaw, out);
   aimDirection(yaw, pitch, _d);
   const lat = barrelLateral(index, count);
-  // Right of the aim yaw is -X at yaw 0 (see shared/math.ts).
-  out.x += _d.x * MUZZLE_DISTANCE - Math.cos(yaw) * lat;
+  // Turret-local +X at this yaw is (cos yaw, 0, -sin yaw).
+  out.x += _d.x * MUZZLE_DISTANCE + Math.cos(yaw) * lat;
   out.y += _d.y * MUZZLE_DISTANCE;
-  out.z += _d.z * MUZZLE_DISTANCE + Math.sin(yaw) * lat;
+  out.z += _d.z * MUZZLE_DISTANCE - Math.sin(yaw) * lat;
   return out;
 }
 
@@ -91,7 +103,8 @@ export function computeShots(p: Vec3, q: Quat, aimYaw: number, aimPitch: number,
   const out: ShotSpec[] = [];
   for (let i = 0; i < count; i++) {
     const t = count === 1 ? 0 : i / (count - 1) - 0.5;
-    let yaw = aimYaw - t * cfg.twinSpread * 2;
+    // Each twin barrel diverges toward its own side (index 0 = right = negative yaw).
+    let yaw = aimYaw + t * cfg.twinSpread * 2;
     let pt = pitch;
     if (cfg.aimSpreadDeg > 0) {
       const seed = shotSeed(playerId, inputSeq, i);
@@ -113,7 +126,7 @@ export interface AimSolution {
   point: Vec3;
   kind: AimHitKind;
   targetId: number;
-  /** Turret yaw/pitch from the hinge to `point` (pitch clamped). */
+  /** Turret yaw (from the axis) and pitch (from the hinge) to `point`; pitch clamped. */
   yaw: number;
   pitch: number;
   /** True when the pitch limit stopped the barrel reaching the point. */
@@ -135,7 +148,7 @@ export interface AimQuery {
   selfId: number;
   camOrigin: Vec3;
   camDir: Vec3;
-  /** Barrel hinge of the shooter (getTurretPivot). */
+  /** Turret axis point of the shooter (getTurretPivot). */
   pivot: Vec3;
 }
 
@@ -184,13 +197,18 @@ export function solveAim(q: AimQuery, out: AimSolution): AimSolution {
   return aimAnglesFrom(q.pivot, out.point, out);
 }
 
-/** Fills yaw/pitch/clamped/distance for the hinge -> point line. */
+/**
+ * Fills yaw/pitch/clamped/distance for aiming at `point` from turret axis
+ * point `pivot`. The hinge sits BARREL_HINGE_FWD along the yaw, i.e. on the
+ * horizontal line to the point, so yaw is the same from either and pitch is
+ * measured from the hinge.
+ */
 export function aimAnglesFrom(pivot: Vec3, point: Vec3, out: AimSolution): AimSolution {
   const dx = point.x - pivot.x, dy = point.y - pivot.y, dz = point.z - pivot.z;
   const flat = Math.hypot(dx, dz);
   out.distance = Math.hypot(flat, dy);
   out.yaw = Math.atan2(dx, dz);
-  const raw = Math.atan2(dy, flat);
+  const raw = Math.atan2(dy, Math.max(0.05, flat - BARREL_HINGE_FWD));
   out.pitch = clampAimPitch(raw);
   out.clamped = Math.abs(out.pitch - raw) > 1e-4;
   return out;

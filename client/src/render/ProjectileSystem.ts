@@ -1,54 +1,94 @@
 import * as THREE from 'three';
-import type { Collider } from '@dimforge/rapier3d-compat';
-import { physicsConfig, stepProjectile, type ProjectileState, type Vec3 } from '@robot-arena/shared';
+import {
+  castHitTargets,
+  createEnvCaster,
+  makeStepResult,
+  physicsConfig,
+  StepKind,
+  stepProjectile,
+  type HitTarget,
+  type ProjectileState,
+  type ProjectileWorld,
+  type ShotResultMsg,
+  type Vec3,
+} from '@robot-arena/shared';
 import type { PhysicsWorld } from '../physics/PhysicsWorld';
-import type { VFXSystem } from './VFXSystem';
+
+/** The few effects shells need; satisfied by the VFX system. */
+export interface ProjectileVfx {
+  impactSparks(p: THREE.Vector3, n: THREE.Vector3, color: THREE.Color, scale: number): void;
+  decal(p: THREE.Vector3, n: THREE.Vector3, size: number): void;
+  trail(p: THREE.Vector3, v: THREE.Vector3, color: THREE.Color): void;
+}
 
 interface VisualProjectile {
   state: ProjectileState;
   mesh: THREE.Mesh;
   color: THREE.Color;
   serverPid: number;
-  predicted: boolean;
-  exclude: Collider | undefined;
+  /** "seq:barrel" for the local player's predicted shells, else ''. */
+  shotKey: string;
   prev: THREE.Vector3;
+  /** Seconds since a predicted robot contact (-1 = flying). The shell fades while it waits on the server. */
+  waitT: number;
+  /** Positions of every tick, for the debug overlay (predicted shells only). */
+  path: Vec3[] | null;
 }
 
 export interface ProjectileCallbacks {
-  /** A locally predicted shot touched a robot (instant hit feedback). */
-  onPredictedRobotHit(point: Vec3, robotId: number): void;
   onSurfaceHit(point: Vec3, normal: Vec3): void;
+  /** A predicted shell finished (any outcome) — its client-side path for the debug overlay. */
+  onPredictedDone?(shotKey: string, path: Vec3[], hitRobot: number): void;
 }
 
 const tmpDir = new THREE.Vector3();
 const tmpVel = new THREE.Vector3();
 const tmpPos = new THREE.Vector3();
+const tmpN = new THREE.Vector3();
 const Y = new THREE.Vector3(0, 1, 0);
+const FADE_S = 0.12;
 
 /**
- * Cosmetic projectile simulation on the client. Uses the same swept-raycast
- * routine as the server, against the client's world, so travel time, ricochets
- * and impacts look right without waiting on the network.
+ * Cosmetic shells on the client, flown with the same stepper as the server:
+ * the static arena via Rapier, robots as hitboxes at their interpolated poses.
+ * Wall hits are shown immediately (the arena is identical on both sides).
+ * Robot contacts never show feedback on their own: the shell fades and the
+ * impact is drawn when the server confirms it (confirmShot).
  */
 export class ProjectileSystem {
   private readonly list: VisualProjectile[] = [];
   private readonly geo = new THREE.CylinderGeometry(0.07, 0.07, 1.1, 8, 1).rotateX(Math.PI / 2);
   private readonly scene: THREE.Scene;
-  private readonly physics: PhysicsWorld;
-  private readonly vfx: VFXSystem;
+  private readonly vfx: ProjectileVfx;
   private readonly callbacks: ProjectileCallbacks;
+  /** Static arena + current hitboxes; also used by the aim solver. */
+  readonly world: ProjectileWorld;
+  private readonly step = makeStepResult();
+  private targets: readonly HitTarget[] = [];
+  private targetCount = 0;
   private nextLocalId = -1;
+  recordPaths = false;
 
-  constructor(scene: THREE.Scene, physics: PhysicsWorld, vfx: VFXSystem, callbacks: ProjectileCallbacks) {
+  constructor(scene: THREE.Scene, physics: PhysicsWorld, vfx: ProjectileVfx, callbacks: ProjectileCallbacks) {
     this.scene = scene;
-    this.physics = physics;
     this.vfx = vfx;
     this.callbacks = callbacks;
+    const castEnv = createEnvCaster(physics.world);
+    this.world = {
+      castEnv,
+      castRobots: (o, d, max, radius, padH, padV, ignore, out) => castHitTargets(this.targets, this.targetCount, o, d, max, radius, padH, padV, ignore, out),
+    };
   }
 
-  spawn(owner: number, pos: Vec3, vel: Vec3, bounces: number, color: number, predicted: boolean, serverPid: number, exclude: Collider | undefined): void {
+  /** Robot hitboxes shells are tested against this tick (interpolated remotes + the predicted local robot). */
+  setTargets(targets: readonly HitTarget[], count: number): void {
+    this.targets = targets;
+    this.targetCount = count;
+  }
+
+  spawn(owner: number, pos: Vec3, vel: Vec3, bounces: number, color: number, serverPid: number, shotKey: string, assist: boolean): void {
     const c = new THREE.Color(color);
-    const mat = new THREE.MeshBasicMaterial({ color: c.clone().lerp(new THREE.Color(1, 1, 1), 0.45).multiplyScalar(7) });
+    const mat = new THREE.MeshBasicMaterial({ color: c.clone().lerp(new THREE.Color(1, 1, 1), 0.45).multiplyScalar(7), transparent: true });
     const mesh = new THREE.Mesh(this.geo, mat);
     mesh.position.set(pos.x, pos.y, pos.z);
     tmpDir.set(vel.x, vel.y, vel.z).normalize();
@@ -65,20 +105,51 @@ export class ProjectileSystem {
         lifetime: physicsConfig.projectileLifetime,
         damage: 0,
         knockback: 0,
+        radius: physicsConfig.projectileRadius,
+        assist,
+        dist: 0,
       },
       mesh,
       color: c,
       serverPid,
-      predicted,
-      exclude,
+      shotKey,
       prev: new THREE.Vector3(pos.x, pos.y, pos.z),
+      waitT: -1,
+      path: shotKey && this.recordPaths ? [{ ...pos }] : null,
     });
+  }
+
+  /** Advances a just-spawned remote shell by the server's hitscan fast-forward. */
+  fastForward(pid: number, seconds: number): void {
+    const p = this.list.find((x) => x.serverPid === pid);
+    if (!p) return;
+    let left = seconds;
+    while (left > 1e-6 && this.list.includes(p)) {
+      const h = Math.min(1 / 60, left);
+      left -= h;
+      this.stepOne(this.list.indexOf(p), h);
+    }
   }
 
   /** Removes a remote projectile the server says has already impacted. */
   removeByServerPid(pid: number): void {
     const i = this.list.findIndex((p) => p.serverPid === pid);
     if (i >= 0) this.kill(i);
+  }
+
+  /** Server verdict for one of our own shells: draw the impact where the server resolved it. */
+  confirmShot(r: ShotResultMsg, color: number): void {
+    const key = `${r.seq}:${r.b}`;
+    const i = this.list.findIndex((p) => p.shotKey === key);
+    if (r.hit) {
+      if (i >= 0) this.kill(i);
+      tmpPos.set(r.point.x, r.point.y, r.point.z);
+      tmpN.set(-r.dir.x, -r.dir.y, -r.dir.z);
+      this.vfx.impactSparks(tmpPos, tmpN, new THREE.Color(color), 1.2);
+    } else if (i >= 0 && this.list[i].waitT >= 0) {
+      // We predicted a hit the server rejected: the shell already faded; nothing to show.
+      this.kill(i);
+    }
   }
 
   /** Server bounce correction for remote projectiles. */
@@ -97,43 +168,62 @@ export class ProjectileSystem {
   }
 
   fixedUpdate(dt: number): void {
-    for (let i = this.list.length - 1; i >= 0; i--) {
-      const p = this.list[i];
-      p.prev.set(p.state.pos.x, p.state.pos.y, p.state.pos.z);
-      const r = stepProjectile(this.physics.world, p.state, dt, p.exclude, this.physics.isEnvironment);
-      if (r.kind === 'expire') {
-        this.kill(i);
-        continue;
-      }
-      if (r.kind === 'bounce') {
-        const pt = new THREE.Vector3(r.point.x, r.point.y, r.point.z);
-        const n = new THREE.Vector3(r.normal.x, r.normal.y, r.normal.z);
-        this.vfx.impactSparks(pt, n, p.color, 0.6);
-        this.callbacks.onSurfaceHit(r.point, r.normal);
-        // Exclusion only matters at launch; after a ricochet the shooter can be hit.
-        p.exclude = undefined;
-        continue;
-      }
-      if (r.kind === 'hit') {
-        const pt = new THREE.Vector3(r.point.x, r.point.y, r.point.z);
-        const n = new THREE.Vector3(r.normal.x, r.normal.y, r.normal.z);
-        const robotId = this.physics.robotIdFor(r.collider);
-        if (robotId === undefined) {
-          this.vfx.impactSparks(pt, n, p.color, 1);
-          this.vfx.decal(pt, n, 0.9);
-          this.callbacks.onSurfaceHit(r.point, r.normal);
-        } else if (p.predicted) {
-          this.vfx.impactSparks(pt, n, p.color, 1.2);
-          this.callbacks.onPredictedRobotHit(r.point, robotId);
-        }
-        this.kill(i);
-      }
+    for (let i = this.list.length - 1; i >= 0; i--) this.stepOne(i, dt);
+  }
+
+  private stepOne(i: number, dt: number): void {
+    const p = this.list[i];
+    if (p.waitT >= 0) {
+      p.waitT += dt;
+      (p.mesh.material as THREE.MeshBasicMaterial).opacity = Math.max(0, 1 - p.waitT / FADE_S);
+      // Unconfirmed after a generous wait: drop it.
+      if (p.waitT > 1) this.kill(i);
+      return;
     }
+    p.prev.set(p.state.pos.x, p.state.pos.y, p.state.pos.z);
+    const kind = stepProjectile(this.world, p.state, dt, this.step);
+    p.path?.push({ ...p.state.pos });
+    const r = this.step;
+    if (kind === StepKind.FLY) return;
+    if (kind === StepKind.EXPIRE) {
+      this.finish(p, -1);
+      this.kill(i);
+      return;
+    }
+    tmpPos.set(r.point.x, r.point.y, r.point.z);
+    tmpN.set(r.normal.x, r.normal.y, r.normal.z);
+    if (kind === StepKind.BOUNCE) {
+      this.vfx.impactSparks(tmpPos, tmpN, p.color, 0.6);
+      this.callbacks.onSurfaceHit(r.point, r.normal);
+      return;
+    }
+    if (kind === StepKind.HIT_ENV) {
+      this.vfx.impactSparks(tmpPos, tmpN, p.color, 1);
+      this.vfx.decal(tmpPos, tmpN, 0.9);
+      this.callbacks.onSurfaceHit(r.point, r.normal);
+      this.finish(p, -1);
+      this.kill(i);
+      return;
+    }
+    // Robot contact.
+    this.finish(p, r.targetId);
+    if (p.shotKey) {
+      p.mesh.position.set(r.point.x, r.point.y, r.point.z);
+      p.waitT = 0;
+    } else {
+      // Remote shell: the server's impact event draws the hit.
+      this.kill(i);
+    }
+  }
+
+  private finish(p: VisualProjectile, robot: number): void {
+    if (p.shotKey && p.path) this.callbacks.onPredictedDone?.(p.shotKey, p.path, robot);
   }
 
   /** Per-frame visual update: orientation + trail particles. */
   update(): void {
     for (const p of this.list) {
+      if (p.waitT >= 0) continue;
       const s = p.state;
       p.mesh.position.set(s.pos.x, s.pos.y, s.pos.z);
       tmpVel.set(s.vel.x, s.vel.y, s.vel.z);

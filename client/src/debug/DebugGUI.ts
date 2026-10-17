@@ -5,6 +5,7 @@ import type { CameraController } from '../render/CameraController';
 import type { Renderer } from '../render/Renderer';
 import { QUALITY_ORDER, type QualityName } from '../render/Quality';
 import type { LocalPredictor } from '../physics/LocalPredictor';
+import type { NetSimSettings } from '../net/NetClient';
 
 const PHYSICS_GROUPS: Record<string, PhysicsConfigKey[]> = {
   World: ['gravity'],
@@ -23,7 +24,32 @@ const PHYSICS_GROUPS: Record<string, PhysicsConfigKey[]> = {
   ],
   'Boost & Dash': ['boostForceMul', 'boostMaxSpeedMul', 'boostDrainPerSec', 'boostRegenPerSec', 'dashImpulse', 'dashCooldown'],
   'Anti-flip': ['antiFlipDelay', 'antiFlipTorque', 'antiFlipLift'],
-  Weapons: ['projectileSpeed', 'projectileLifetime', 'projectileImpulse', 'projectileDamage', 'fireInterval', 'twinSpread'],
+  Weapons: [
+    'projectileSpeed',
+    'projectileLifetime',
+    'projectileImpulse',
+    'projectileDamage',
+    'fireInterval',
+    'twinSpread',
+    'projectileRadius',
+    'projectileGravity',
+  ],
+  'Aim & hit registration': [
+    'aimPitchMinDeg',
+    'aimPitchMaxDeg',
+    'aimMaxRange',
+    'aimSpreadDeg',
+    'floorAimRadius',
+    'aimDepthRadius',
+    'lagCompEnabled',
+    'lagCompMaxMs',
+    'hitscanAssistMs',
+    'selfHitGraceS',
+    'aimAssistEnabled',
+    'aimAssistRadiusH',
+    'aimAssistRadiusV',
+    'aimAssistMaxRange',
+  ],
   Ramming: ['ramMinSpeed', 'ramDamagePerMps', 'ramSelfDamageFraction', 'ramCooldown', 'ramImpulse'],
   Abilities: [
     'empRadius',
@@ -46,6 +72,7 @@ export interface DebugHooks {
   camera: CameraController;
   predictor: LocalPredictor;
   net: { interpolationDelayMs: number; showServerGhost: boolean };
+  netSim: NetSimSettings;
   onPhysicsChange(key: PhysicsConfigKey, value: number): void;
   onQualityChange(name: QualityName): void;
   currentQuality(): QualityName;
@@ -94,10 +121,9 @@ export class DebugGUI {
     const c = this.gui.addFolder('Camera');
     const ct = hooks.camera.tuning;
     c.add(ct, 'distance', 3, 20, 0.1);
-    c.add(ct, 'height', 0.5, 10, 0.1);
+    c.add(ct, 'height', -1, 5, 0.05);
     c.add(ct, 'stiffness', 5, 300, 1);
     c.add(ct, 'damping', 0.2, 2, 0.01);
-    c.add(ct, 'lookAhead', 0, 1, 0.01);
     c.add(ct, 'lookHeight', 0, 4, 0.05);
     c.add(ct, 'fov', 40, 110, 1);
     c.add(ct, 'boostFov', 40, 120, 1);
@@ -112,6 +138,11 @@ export class DebugGUI {
     n.add(hooks.net, 'interpolationDelayMs', 0, 300, 5).name('Interp delay (ms)');
     n.add(hooks.predictor, 'smoothTime', 0.01, 0.5, 0.01).name('Correction smoothing (s)');
     n.add(hooks.net, 'showServerGhost').name('Show server ghost');
+    const sim = n.addFolder('Latency simulator (this client)');
+    sim.add(hooks.netSim, 'latencyMs', 0, 300, 5).name('Extra one-way (ms)');
+    sim.add(hooks.netSim, 'jitterMs', 0, 100, 1).name('Jitter (ms)');
+    sim.add(hooks.netSim, 'inputLoss', 0, 0.5, 0.01).name('Input packet loss');
+    sim.close();
     n.close();
 
     const p = this.gui.addFolder('Physics (synced to server)');

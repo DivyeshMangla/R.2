@@ -323,6 +323,7 @@ export class GameSimulation implements GameHost {
   private nextInput(r: ServerRobot, dt: number): InputFrame {
     if (r.bot) return r.bot.think(r, this, dt);
     const next = r.inputQueue.shift();
+    r.freshInput = next !== undefined;
     if (next) {
       r.lastInput = next;
       r.lastProcessedSeq = next.seq;
@@ -359,7 +360,8 @@ export class GameSimulation implements GameHost {
       if (res.dashed) this.emit({ k: 'dash', id: r.id });
       if (!playing || stunned) continue;
       if (input.buttons & Buttons.ABILITY) this.powerups.tryAbilities(r);
-      if (input.buttons & Buttons.FIRE) this.weapons.tryFire(r, input);
+      // A repeated input (gap in the client's stream) keeps driving but never fires: the client did not predict that shot.
+      if (input.buttons & Buttons.FIRE && (r.isBot || r.freshInput)) this.weapons.tryFire(r, input);
     }
 
     this.physics.step();

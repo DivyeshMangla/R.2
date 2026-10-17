@@ -2,30 +2,40 @@ import * as THREE from 'three';
 import {
   applyPhysicsTuning,
   Buttons,
+  computeShots,
   computeStats,
   FIXED_DT,
   getPowerUp,
+  getTurretPivot,
   initPhysics,
+  makeAimSolution,
+  makeHitTarget,
   MatchPhase,
-  muzzleTransforms,
+  MAX_PLAYERS,
   physicsConfig,
   replacePhysicsConfig,
   RobotFlags,
+  solveAim,
   WHEEL_ANCHORS,
   yawFromQuat,
   type CardOfferMsg,
   type CardResolvedMsg,
   type EventsMsg,
   type GameEvent,
+  type HitTarget,
+  type InputFrame,
   type PlayerInfo,
   type ResultsMsg,
   type RobotNetState,
   type RobotStats,
   type RosterMsg,
+  type ShotResultMsg,
   type SnapshotMsg,
+  type Vec3,
   type WelcomeMsg,
 } from '@robot-arena/shared';
 import { AudioSystem } from './audio/AudioSystem';
+import { AimDebug } from './debug/AimDebug';
 import { DebugGUI } from './debug/DebugGUI';
 import { InputManager } from './input/InputManager';
 import { NetClient } from './net/NetClient';
@@ -74,6 +84,7 @@ export class Game {
   private debris!: DebrisSystem;
   private arena!: ArenaVisuals;
   private gui!: DebugGUI;
+  private aimDebug!: AimDebug;
 
   private readonly netTuning = { interpolationDelayMs: 100, showServerGhost: false };
   private readonly views = new Map<number, RobotView>();
@@ -99,6 +110,14 @@ export class Game {
   private autoDetect: QualityAutoDetector | null;
   private ghost: THREE.Mesh | null = null;
 
+  /** Latest aim solution (screen-centre ray -> world point -> turret yaw/pitch). */
+  private readonly aim = makeAimSolution();
+  private aimValid = false;
+  private readonly pivot: Vec3 = { x: 0, y: 0, z: 0 };
+  /** Hitboxes as this screen shows them: interpolated remotes + the predicted local robot. */
+  private readonly hitTargets: HitTarget[] = Array.from({ length: MAX_PLAYERS + 2 }, makeHitTarget);
+  private hitTargetCount = 0;
+
   constructor(container: HTMLElement) {
     this.container = container;
     this.renderer = new Renderer(container);
@@ -115,6 +134,7 @@ export class Game {
       onCards: (m) => this.onCards(m),
       onCardsResolved: (m) => this.onCardsResolved(m),
       onResults: (m) => this.onResults(m),
+      onShotResult: (m) => this.onShotResult(m),
       onDisconnect: (reason) => {
         this.connected = false;
         this.ui.setSplashVisible(true);
@@ -132,15 +152,15 @@ export class Game {
     this.arena = buildArena(this.renderer.maxAnisotropy);
     scene.add(this.arena.group);
     this.debris = new DebrisSystem(scene, this.vfx);
+    this.aimDebug = new AimDebug(scene);
+    // Predicted robot contacts never give feedback; hitmarkers wait for SHOT_RESULT.
     this.projectiles = new ProjectileSystem(scene, this.physics, this.vfx, {
-      onPredictedRobotHit: () => {
-        this.ui.showHitmarker();
-        this.audio.hitMarker();
-      },
       onSurfaceHit: (p) => {
         if (Math.random() < 0.5) this.audio.impact(_v.set(p.x, p.y, p.z), this.renderer.camera, false);
       },
+      onPredictedDone: (_key, path) => this.aimDebug.onClientPath(path),
     });
+    this.projectiles.recordPaths = true;
     this.setQuality(this.quality, false);
 
     this.gui = new DebugGUI({
@@ -148,6 +168,7 @@ export class Game {
       camera: this.cameraCtl,
       predictor: this.predictor,
       net: this.netTuning,
+      netSim: this.net.sim,
       onPhysicsChange: (key, value) => {
         applyPhysicsTuning(key, value);
         this.net.sendTune(key, value);
@@ -198,8 +219,16 @@ export class Game {
     this.renderer.renderer.domElement.addEventListener('click', () => {
       if (this.started && !this.input.isLocked) this.input.requestLock();
     });
-    this.input.onKey((code) => {
+    this.input.onKey((code, e) => {
       if (code === 'Backquote' || code === 'F2') this.gui.toggle();
+      if (code === 'F4') {
+        e.preventDefault();
+        this.aimDebug.toggle();
+      }
+      if (code === 'F5') {
+        e.preventDefault();
+        this.aimDebug.togglePip();
+      }
       if (code === 'KeyM') this.audio.setMuted(!this.audio.muted);
       if (code === 'Digit1' || code === 'Numpad1') this.pickCard(0);
       if (code === 'Digit2' || code === 'Numpad2') this.pickCard(1);
@@ -303,7 +332,10 @@ export class Game {
     const me = this.myId;
     switch (e.k) {
       case 'impact':
-        return e.target === me;
+        // Our own shells too, so the target flash lines up with the confirmed hitmarker.
+        return e.target === me || e.owner === me;
+      case 'kill':
+        return e.killer === me || e.victim === me;
       case 'dmg':
         return e.target === me;
       case 'death':
@@ -327,6 +359,17 @@ export class Game {
     this.audio.pick();
     const def = getPowerUp(m.picked);
     if (def && m.auto) this.ui.spawnNumber(this.localPosition(), `AUTO: ${def.name}`, 'heal');
+  }
+
+  /** The server's verdict on one of our shells: the only source of hit feedback. */
+  private onShotResult(r: ShotResultMsg): void {
+    this.projectiles.confirmShot(r, this.colorOf(this.myId));
+    this.aimDebug.onShotResult(r, r.target >= 0 ? this.players.get(r.target)?.name ?? `#${r.target}` : '');
+    if (!r.hit || r.dmg <= 0) return;
+    const p = new THREE.Vector3(r.point.x, r.point.y, r.point.z);
+    this.ui.spawnNumber(p, String(r.dmg), r.dmg >= 30 ? 'crit' : 'dealt');
+    this.ui.showHitmarker();
+    this.audio.hitMarker();
   }
 
   private onResults(m: ResultsMsg): void {
@@ -362,7 +405,9 @@ export class Game {
         if (e.owner === this.myId) return;
         const p = new THREE.Vector3(e.p.x, e.p.y, e.p.z);
         const dir = new THREE.Vector3(e.v.x, e.v.y, e.v.z).normalize();
-        this.projectiles.spawn(e.owner, e.p, e.v, e.bounces, this.colorOf(e.owner), false, e.pid, this.physics.proxyCollider(e.owner));
+        this.projectiles.spawn(e.owner, e.p, e.v, e.bounces, this.colorOf(e.owner), e.pid, '', false);
+        // The server already flew this shell `ff` seconds (hitscan assist).
+        if (e.ff > 0) this.projectiles.fastForward(e.pid, e.ff);
         this.vfx.muzzleFlash(p, dir);
         this.audio.cannon(p, cam, false);
         return;
@@ -376,11 +421,8 @@ export class Game {
         if (e.target < 0) return;
         const n = new THREE.Vector3(e.n.x, e.n.y, e.n.z);
         this.views.get(e.target)?.flashHit();
-        if (e.owner === this.myId) {
-          if (e.dmg > 0) this.ui.spawnNumber(p, String(e.dmg), e.dmg >= 30 ? 'crit' : 'dealt');
-          this.ui.showHitmarker();
-          this.audio.hitMarker();
-        } else {
+        // Our own hits are drawn from SHOT_RESULT (onShotResult); everyone else's from this event.
+        if (e.owner !== this.myId) {
           this.vfx.impactSparks(p, n, new THREE.Color(this.colorOf(e.owner)), 1.2);
           this.audio.impact(p, cam, true);
         }
@@ -422,7 +464,11 @@ export class Game {
         const assists = e.assists.map((a) => this.players.get(a)).filter((x): x is PlayerInfo => !!x);
         const mine = e.killer === this.myId || e.victim === this.myId || e.assists.includes(this.myId);
         this.ui.addKill(killer, victim, assists, mine);
-        if (e.killer === this.myId && victim) this.ui.spawnNumber(this.localPosition(), `+100 XP  ${victim.name} destroyed`, 'crit');
+        if (e.killer === this.myId && victim) {
+          this.ui.spawnNumber(this.localPosition(), `+100 XP  ${victim.name} destroyed`, 'crit');
+          this.ui.showHitmarker(true);
+          this.audio.hitMarker();
+        }
         else if (e.assists.includes(this.myId)) this.ui.spawnNumber(this.localPosition(), '+40 XP assist', 'heal');
         return;
       }
@@ -521,7 +567,9 @@ export class Game {
     const renderT = this.renderTime();
     const latest = this.buffer.latest();
 
-    // Remote robots become kinematic proxies at their interpolated poses.
+    // Remote robots become kinematic proxies (for bumping) and hitboxes (for aiming and shells)
+    // at their interpolated poses: exactly what the server rewinds to for our shots.
+    let n = 0;
     if (latest) {
       for (const id of latest.robots.keys()) {
         if (id === this.myId) continue;
@@ -530,14 +578,21 @@ export class Game {
         this.interp.set(id, s);
         const alive = (s.latest.flags & RobotFlags.ALIVE) !== 0;
         this.physics.setProxy(id, s.position, s.quaternion, alive);
+        if (alive && n < this.hitTargets.length - 1) this.setHitTarget(n++, id, s.position, s.quaternion);
       }
     }
+    const lc = this.predictor.controller;
+    const meAlive = latest?.robots.get(this.myId) ? ((latest.robots.get(this.myId)!.flags & RobotFlags.ALIVE) !== 0) : false;
+    if (lc && meAlive) this.setHitTarget(n++, this.myId, lc.body.translation(), lc.body.rotation());
+    this.hitTargetCount = n;
+    this.projectiles.setTargets(this.hitTargets, n);
 
     const me = latest?.robots.get(this.myId);
     if (me && this.predictor.active && this.connected) {
       const alive = (me.flags & RobotFlags.ALIVE) !== 0;
       const playing = this.phase === MatchPhase.PLAYING;
       const frame = this.input.sample();
+      this.solveLocalAim(frame, renderT);
       if (!playing) {
         frame.throttle = 0;
         frame.steer = 0;
@@ -553,7 +608,7 @@ export class Game {
         }
       }
       this.localFireCooldown = Math.max(0, this.localFireCooldown - dt);
-      if (alive && playing && !this.predictor.stunned && (frame.buttons & Buttons.FIRE) && this.localFireCooldown <= 0) this.fireLocal(frame.aimYaw);
+      if (alive && playing && !this.predictor.stunned && (frame.buttons & Buttons.FIRE) && this.localFireCooldown <= 0) this.fireLocal(frame);
     }
 
     this.physics.step();
@@ -562,26 +617,58 @@ export class Game {
     this.debris.fixedUpdate(dt);
   }
 
-  private fireLocal(aimYaw: number): void {
+  private setHitTarget(i: number, id: number, p: Vec3, q: { x: number; y: number; z: number; w: number }): void {
+    const t = this.hitTargets[i];
+    t.id = id;
+    t.p.x = p.x; t.p.y = p.y; t.p.z = p.z;
+    t.q.x = q.x; t.q.y = q.y; t.q.z = q.z; t.q.w = q.w;
+  }
+
+  /**
+   * Turns the screen-centre ray (last rendered camera) into turret yaw/pitch
+   * with the shared solver, and stamps the frame with the time of the world
+   * this screen shows so the server can rewind to it.
+   */
+  private solveLocalAim(frame: InputFrame, renderT: number): void {
+    const c = this.predictor.controller;
+    frame.viewT = renderT;
+    if (!c) {
+      this.aimValid = false;
+      frame.aimYaw = this.input.viewYaw;
+      frame.aimPitch = 0;
+      return;
+    }
+    getTurretPivot(c.body.translation(), c.body.rotation(), this.pivot);
+    solveAim(
+      {
+        world: this.projectiles.world,
+        targets: this.hitTargets,
+        targetCount: this.hitTargetCount,
+        selfId: this.myId,
+        camOrigin: this.cameraCtl.aimOrigin,
+        camDir: this.cameraCtl.aimDir,
+        pivot: this.pivot,
+      },
+      this.aim,
+    );
+    this.aimValid = true;
+    frame.aimYaw = this.aim.yaw;
+    frame.aimPitch = this.aim.pitch;
+  }
+
+  private fireLocal(frame: InputFrame): void {
     const c = this.predictor.controller;
     if (!c) return;
     const cfg = physicsConfig;
     const st = this.myStats;
     this.localFireCooldown = cfg.fireInterval / st.fireRateMul;
-    const muzzles = muzzleTransforms(c.body.translation(), c.body.rotation(), aimYaw, st.projectileCount, cfg.twinSpread);
+    // Same shot spec (origin, direction, seeded spread) the server computes for this input seq.
+    const shots = computeShots(c.body.translation(), c.body.rotation(), frame.aimYaw, frame.aimPitch, st.projectileCount, this.myId, frame.seq);
     const color = this.colorOf(this.myId);
-    for (const m of muzzles) {
-      this.projectiles.spawn(
-        this.myId,
-        m.p,
-        { x: m.d.x * cfg.projectileSpeed, y: m.d.y * cfg.projectileSpeed, z: m.d.z * cfg.projectileSpeed },
-        st.ricochetBounces,
-        color,
-        true,
-        0,
-        c.collider,
-      );
-      this.vfx.muzzleFlash(new THREE.Vector3(m.p.x, m.p.y, m.p.z), new THREE.Vector3(m.d.x, m.d.y, m.d.z));
+    for (const s of shots) {
+      const v = { x: s.dir.x * cfg.projectileSpeed, y: s.dir.y * cfg.projectileSpeed, z: s.dir.z * cfg.projectileSpeed };
+      this.projectiles.spawn(this.myId, s.origin, v, st.ricochetBounces, color, 0, `${frame.seq}:${s.barrel}`, true);
+      this.vfx.muzzleFlash(new THREE.Vector3(s.origin.x, s.origin.y, s.origin.z), new THREE.Vector3(s.dir.x, s.dir.y, s.dir.z));
     }
     this.audio.cannon(null, null, true);
     this.cameraCtl.addTrauma(0.1);
@@ -676,7 +763,16 @@ export class Game {
         myView.setVisible(true);
         const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(_quat);
         myView.update(
-          { position: _pos, quaternion: _quat, aimYaw: this.input.aimYaw, steer: 0, forwardSpeed: camVel.dot(fwd), flags, wheels: this.wheelTelemetry() },
+          {
+            position: _pos,
+            quaternion: _quat,
+            aimYaw: this.aimValid ? this.aim.yaw : this.input.viewYaw,
+            aimPitch: this.aimValid ? this.aim.pitch : 0,
+            steer: 0,
+            forwardSpeed: camVel.dot(fwd),
+            flags,
+            wheels: this.wheelTelemetry(),
+          },
           dt,
           this.time,
         );
@@ -706,13 +802,17 @@ export class Game {
       }
       view.setVisible(true);
       const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(s.quaternion);
-      view.update({ position: s.position, quaternion: s.quaternion, aimYaw: s.aimYaw, steer: s.steer, forwardSpeed: s.velocity.dot(fwd), flags: s.latest.flags, wheels: null }, dt, this.time);
+      view.update(
+        { position: s.position, quaternion: s.quaternion, aimYaw: s.aimYaw, aimPitch: s.aimPitch, steer: s.steer, forwardSpeed: s.velocity.dot(fwd), flags: s.latest.flags, wheels: null },
+        dt,
+        this.time,
+      );
       this.surfaceEffects(view, s.position, s.quaternion, s.velocity, s.latest.flags, Math.abs(s.velocity.y) < 2.5, dt);
       this.debris.syncRobot(id, s.position, s.quaternion, true);
     }
 
     // Camera, shadows, audio listener.
-    this.cameraCtl.update(camTarget, camVel, this.input.aimYaw, this.input.cameraPitch, boosting, dt);
+    this.cameraCtl.update(camTarget, this.input.viewYaw, this.input.viewPitch, boosting, dt);
     this.renderer.followShadow(camTarget);
     this.audio.setListener(this.renderer.camera.position);
 
@@ -725,8 +825,13 @@ export class Game {
     this.updateGhost(me);
 
     this.updateHud(me, dt);
+    this.aimDebug.update(
+      this.aimValid ? { camOrigin: this.cameraCtl.aimOrigin, aim: this.aim, pivot: this.pivot, targets: this.hitTargets, targetCount: this.hitTargetCount } : null,
+      dt,
+    );
     this.renderer.info.reset();
     this.renderer.render(dt);
+    this.aimDebug.renderPip(this.renderer.renderer, this.renderer.scene);
 
     if (this.autoDetect && this.started) {
       const rec = this.autoDetect.sample(dt);
@@ -788,15 +893,9 @@ export class Game {
 
     ui.setScoreboardVisible(this.input.isDown('Tab'));
 
-    // Crosshair sits where the turret is actually pointing.
-    const c = this.predictor?.controller;
-    if (c && alive) {
-      const m = muzzleTransforms(c.body.translation(), c.body.rotation(), this.input.aimYaw, 1, 0)[0];
-      _v.set(m.p.x + m.d.x * 30, m.p.y, m.p.z + m.d.z * 30).project(this.renderer.camera);
-      ui.setCrosshair((_v.x * 0.5 + 0.5) * w, (-_v.y * 0.5 + 0.5) * h, _v.z < 1);
-    } else {
-      ui.setCrosshair(w / 2, h / 2, false);
-    }
+    // The crosshair is the screen centre: the ray the aim solver resolves every tick.
+    ui.setCrosshair(w / 2, h / 2, alive);
+    ui.setCrosshairState(!alive || !this.aimValid ? 'none' : this.aim.clamped ? 'clamped' : this.aim.kind === 'robot' ? 'enemy' : 'none');
 
     const ps = this.predictor?.stats;
     ui.setNetInfo(

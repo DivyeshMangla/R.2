@@ -14,6 +14,7 @@ export interface InterpolatedRobot {
   quaternion: THREE.Quaternion;
   velocity: THREE.Vector3;
   aimYaw: number;
+  aimPitch: number;
   steer: number;
   throttle: number;
   /** Latest authoritative state for non-pose fields (hp, flags...). */
@@ -86,6 +87,7 @@ export class SnapshotBuffer {
         quaternion: new THREE.Quaternion(),
         velocity: new THREE.Vector3(),
         aimYaw: 0,
+        aimPitch: 0,
         steer: 0,
         throttle: 0,
         latest,
@@ -106,6 +108,7 @@ export class SnapshotBuffer {
     qb.set(sb.q.x, sb.q.y, sb.q.z, sb.q.w);
     res.quaternion.slerpQuaternions(qa, qb, t);
     res.aimYaw = lerpAngle(sa.aimYaw, sb.aimYaw, t);
+    res.aimPitch = sa.aimPitch + (sb.aimPitch - sa.aimPitch) * t;
     res.steer = sa.steer + (sb.steer - sa.steer) * t;
     res.throttle = sb.throttle;
     return res;
