@@ -9,6 +9,7 @@ import {
   getTurretPivot,
   initPhysics,
   makeAimSolution,
+  makeEnvHit,
   makeHitTarget,
   MatchPhase,
   MAX_PLAYERS,
@@ -43,14 +44,19 @@ import { SnapshotBuffer, type InterpolatedRobot } from './net/SnapshotBuffer';
 import { DebrisSystem } from './physics/DebrisSystem';
 import { LocalPredictor } from './physics/LocalPredictor';
 import { PhysicsWorld } from './physics/PhysicsWorld';
-import { buildArena, type ArenaVisuals } from './render/ArenaBuilder';
 import { CameraController } from './render/CameraController';
+import { buildArena, type ArenaVisuals } from './render/env/ArenaBuilder';
+import { DustMotes } from './render/env/DustMotes';
 import { ProjectileSystem } from './render/ProjectileSystem';
-import { loadSavedQuality, QualityAutoDetector, saveQuality, type QualityName } from './render/QualityLegacy';
+import { loadSavedSettings, QualityAutoDetector, saveSettings, settingsForPreset, type GraphicsSettings, type QualityName } from './render/Quality';
 import { Renderer } from './render/Renderer';
-import { RobotModelFactory } from './render/RobotModelFactory';
-import { RobotView, type WheelTelemetry } from './render/RobotView';
-import { VFXSystem } from './render/VFXSystem';
+import { DAMAGE_POINTS, EXHAUST_TIPS, NOZZLE_TIPS } from './render/robot/RobotGeometry';
+import { RobotFleet } from './render/robot/RobotFleet';
+import type { RobotVisual, WheelTelemetry } from './render/robot/RobotVisual';
+import type { MineSample } from './render/vfx/MineRenderer';
+import { VFXSystem, type VFXStats } from './render/vfx/VFXSystem';
+import { DebugOverlay, type PerfSample } from './ui/DebugOverlay';
+import { SettingsMenu } from './ui/SettingsMenu';
 import { UI, type AbilityDisplay } from './ui/UI';
 
 interface QueuedEvent {
@@ -59,12 +65,21 @@ interface QueuedEvent {
 }
 
 const IMMEDIATE_EVENTS = new Set<GameEvent['k']>(['tune', 'matchStart', 'levelup', 'powerup', 'heal']);
+const HITSTOP_S = 0.08;
+const HITSTOP_SCALE = 0.15;
 
 const _pos = new THREE.Vector3();
 const _quat = new THREE.Quaternion();
 const _vel = new THREE.Vector3();
 const _v = new THREE.Vector3();
-const _right = new THREE.Vector3();
+const _v2 = new THREE.Vector3();
+const _dir = new THREE.Vector3();
+const _n = new THREE.Vector3();
+const _c = new THREE.Color();
+const BACK = new THREE.Vector3(0, 0, -1);
+const UP = new THREE.Vector3(0, 1, 0);
+const RIGHT = new THREE.Vector3(1, 0, 0);
+const DOWN: Vec3 = { x: 0, y: -1, z: 0 };
 
 /** Top-level client orchestrator: fixed-step simulation loop, networking, rendering and UI. */
 export class Game {
@@ -72,22 +87,24 @@ export class Game {
   private readonly renderer: Renderer;
   private readonly ui = new UI();
   private readonly audio = new AudioSystem();
-  private readonly factory = new RobotModelFactory();
   private readonly buffer = new SnapshotBuffer();
   private readonly cameraCtl: CameraController;
   private readonly input: InputManager;
   private readonly net: NetClient;
+  private readonly perf = new DebugOverlay();
   private physics!: PhysicsWorld;
   private predictor!: LocalPredictor;
   private vfx!: VFXSystem;
+  private fleet!: RobotFleet;
   private projectiles!: ProjectileSystem;
   private debris!: DebrisSystem;
   private arena!: ArenaVisuals;
+  private dust!: DustMotes;
   private gui!: DebugGUI;
   private aimDebug!: AimDebug;
+  private menu!: SettingsMenu;
 
   private readonly netTuning = { interpolationDelayMs: 100, showServerGhost: false };
-  private readonly views = new Map<number, RobotView>();
   private readonly interp = new Map<number, InterpolatedRobot>();
   private readonly players = new Map<number, PlayerInfo>();
   private readonly events: QueuedEvent[] = [];
@@ -98,17 +115,23 @@ export class Game {
   private lastThrottle = 0;
   private phase: number = MatchPhase.PLAYING;
   private lastSnap: SnapshotMsg | null = null;
-  private deathPos = new THREE.Vector3();
+  private readonly deathPos = new THREE.Vector3();
   private respawnAt = 0;
   private killerName = '';
+  private killerId = -1;
   private accumulator = 0;
   private lastFrame = performance.now();
+  /** Wall-clock seconds since start (UI, audio). */
   private time = 0;
+  private hitstop = 0;
   private started = false;
   private connected = false;
-  private quality: QualityName;
+  private wasLocked = false;
+  private settings: GraphicsSettings;
   private autoDetect: QualityAutoDetector | null;
   private ghost: THREE.Mesh | null = null;
+  private cableTimer = 2;
+  private netInfoTimer = 0;
 
   /** Latest aim solution (screen-centre ray -> world point -> turret yaw/pitch). */
   private readonly aim = makeAimSolution();
@@ -118,13 +141,27 @@ export class Game {
   private readonly hitTargets: HitTarget[] = Array.from({ length: MAX_PLAYERS + 2 }, makeHitTarget);
   private hitTargetCount = 0;
 
+  // Reused per-frame scratch (no allocation in the frame loop).
+  private readonly telemetry: WheelTelemetry = { suspension: [0, 0, 0, 0], rotation: [0, 0, 0, 0], steering: [0, 0, 0, 0], contact: [true, true, true, true] };
+  private readonly mineSamples: MineSample[] = [];
+  private readonly vfxStats: VFXStats = { particles: 0, lights: 0 };
+  private readonly perfSample: PerfSample = { frameMs: 0, sceneDraws: 0, totalDraws: 0, triangles: 0, particles: 0, lights: 0, preset: 'High' };
+  private readonly groundHit = makeEnvHit();
+  private readonly groundOrigin: Vec3 = { x: 0, y: 0, z: 0 };
+  private readonly groundHeight = (x: number, y: number, z: number): number => {
+    const o = this.groundOrigin;
+    o.x = x; o.y = y + 0.5; o.z = z;
+    return this.projectiles.world.castEnv(o, DOWN, 30, this.groundHit) ? o.y - this.groundHit.t : 0;
+  };
+  private readonly colorOfFn = (owner: number): number => this.colorOf(owner);
+
   constructor(container: HTMLElement) {
     this.container = container;
     this.renderer = new Renderer(container);
     this.cameraCtl = new CameraController(this.renderer.camera);
     this.input = new InputManager(this.renderer.renderer.domElement);
-    const saved = loadSavedQuality();
-    this.quality = saved ?? 'High';
+    const saved = loadSavedSettings();
+    this.settings = saved ?? settingsForPreset('High');
     this.autoDetect = saved ? null : new QualityAutoDetector();
     this.net = new NetClient({
       onWelcome: (m) => this.onWelcome(m),
@@ -147,34 +184,58 @@ export class Game {
     await initPhysics();
     this.physics = new PhysicsWorld();
     this.predictor = new LocalPredictor(this.physics);
-    const scene = this.renderer.scene;
-    this.vfx = new VFXSystem(scene);
-    this.arena = buildArena(this.renderer.maxAnisotropy);
+    const r = this.renderer;
+    const scene = r.scene;
+    this.cameraCtl.setCollisionWorld(this.physics.world);
+
+    this.arena = buildArena(r.maxAnisotropy);
     scene.add(this.arena.group);
-    this.debris = new DebrisSystem(scene, this.vfx);
+    this.vfx = new VFXSystem(scene, r.distortionScene, this.settings.maxDynamicLights, this.settings.maxDecals);
+    r.setParticles(this.vfx.particleScene, [this.vfx.alpha, this.vfx.add]);
+    this.fleet = new RobotFleet(scene, r.maxAnisotropy);
+    this.dust = new DustMotes(scene);
+    // Reflections come from this arena, baked once it exists (robots/VFX not yet spawned).
+    r.bakeEnvironment();
+
     this.aimDebug = new AimDebug(scene);
+    this.debris = new DebrisSystem(scene, this.vfx, (p, s) => this.audio.debrisClank(p, r.camera, s));
     // Predicted robot contacts never give feedback; hitmarkers wait for SHOT_RESULT.
-    this.projectiles = new ProjectileSystem(scene, this.physics, this.vfx, {
-      onSurfaceHit: (p) => {
-        if (Math.random() < 0.5) this.audio.impact(_v.set(p.x, p.y, p.z), this.renderer.camera, false);
+    this.projectiles = new ProjectileSystem(this.physics, this.vfx, {
+      onSurfaceHit: (p, _n2, surface) => {
+        if (Math.random() < 0.5) this.audio.impact(_v.set(p.x, p.y, p.z), r.camera, surface === 'metal');
       },
-      onPredictedDone: (_key, path) => this.aimDebug.onClientPath(path),
+      onPredictedDone: (_seq, _b, path) => this.aimDebug.onClientPath(path),
     });
     this.projectiles.recordPaths = true;
-    this.setQuality(this.quality, false);
+    this.applySettings(this.settings, false);
 
     this.gui = new DebugGUI({
-      renderer: this.renderer,
+      renderer: r,
       camera: this.cameraCtl,
       predictor: this.predictor,
+      vfx: this.vfx,
+      fleet: this.fleet,
       net: this.netTuning,
       netSim: this.net.sim,
       onPhysicsChange: (key, value) => {
         applyPhysicsTuning(key, value);
         this.net.sendTune(key, value);
       },
-      onQualityChange: (name) => this.setQuality(name, true),
-      currentQuality: () => this.quality,
+      onQualityChange: (name) => this.applySettings(settingsForPreset(name), true),
+      currentQuality: () => this.settings.preset,
+    });
+    this.menu = new SettingsMenu({
+      getSettings: () => this.settings,
+      onSettings: (s) => this.applySettings(s, true),
+      getSensitivity: () => this.input.settings.mouseSensitivity,
+      onSensitivity: (v) => {
+        this.input.settings.mouseSensitivity = v;
+      },
+      getVolume: () => this.audio.volume,
+      onVolume: (v) => this.audio.setVolume(v),
+      onResume: () => {
+        if (this.started) this.input.requestLock();
+      },
     });
 
     this.bindInput();
@@ -196,13 +257,20 @@ export class Game {
     }
   }
 
-  private setQuality(name: QualityName, persist: boolean): void {
-    this.quality = name;
-    this.renderer.applyQuality(name);
-    this.vfx.particleMultiplier = this.renderer.quality.particleMultiplier;
-    this.vfx.maxDecals = this.renderer.quality.maxDecals;
+  /** Applies a graphics settings set to every system that depends on it. */
+  private applySettings(s: GraphicsSettings, persist: boolean): void {
+    this.settings = { ...s };
+    this.renderer.applySettings(this.settings);
+    if (this.vfx) {
+      this.vfx.density = s.particleDensity;
+      this.vfx.lights.resize(s.maxDynamicLights);
+      this.vfx.decals.setLimit(s.maxDecals);
+      this.vfx.skids.enabled = s.skidMarks;
+    }
+    this.fleet?.setContactShadows(s.contactShadows);
+    if (this.dust) this.dust.visible = s.dustMotes;
     if (persist) {
-      saveQuality(name);
+      saveSettings(this.settings);
       this.autoDetect = null;
     }
   }
@@ -217,10 +285,14 @@ export class Game {
 
   private bindInput(): void {
     this.renderer.renderer.domElement.addEventListener('click', () => {
-      if (this.started && !this.input.isLocked) this.input.requestLock();
+      if (this.started && !this.input.isLocked && !this.menu.isOpen) this.input.requestLock();
     });
     this.input.onKey((code, e) => {
       if (code === 'Backquote' || code === 'F2') this.gui.toggle();
+      if (code === 'F3') {
+        e.preventDefault();
+        this.perf.toggle();
+      }
       if (code === 'F4') {
         e.preventDefault();
         this.aimDebug.toggle();
@@ -255,28 +327,28 @@ export class Game {
     const snap = this.buffer.push(m);
     this.phase = m.phase;
 
-    const ids = new Set(snap.robots.keys());
-    for (const [id, view] of this.views) {
-      if (!ids.has(id)) {
-        view.dispose(this.renderer.scene);
-        this.views.delete(id);
+    for (const id of this.fleet.visuals.keys()) {
+      if (!snap.robots.has(id)) {
+        this.fleet.remove(id);
         this.interp.delete(id);
         this.physics.removeProxy(id);
       }
     }
-    this.debris.pruneRobots(ids);
+    this.debris.pruneRobots(snap.robots);
     for (const [id, s] of snap.robots) {
-      if (!this.views.has(id)) {
+      if (!this.fleet.get(id)) {
         const info = this.players.get(id);
-        const view = new RobotView(id, info?.color ?? 0xffffff, this.factory, this.renderer.scene);
-        if (info) {
-          view.setLevel(info.level);
-          view.setPowerUps(info.stacks);
-        }
-        this.views.set(id, view);
+        const v = this.fleet.add(id, info?.color ?? 0xffffff);
+        if (info) this.syncVisualInfo(v, info);
       }
       if (id === this.myId) this.reconcileLocal(s);
     }
+  }
+
+  private syncVisualInfo(v: RobotVisual, info: PlayerInfo): void {
+    v.color = info.color;
+    v.level = info.level;
+    this.fleet.setStacks(v, info.stacks);
   }
 
   private reconcileLocal(s: RobotNetState): void {
@@ -307,12 +379,8 @@ export class Game {
     this.players.clear();
     for (const p of m.players) {
       this.players.set(p.id, p);
-      const view = this.views.get(p.id);
-      if (view) {
-        view.setColor(p.color);
-        view.setLevel(p.level);
-        view.setPowerUps(p.stacks);
-      }
+      const v = this.fleet?.get(p.id);
+      if (v) this.syncVisualInfo(v, p);
       if (p.id === this.myId) {
         this.myStats = computeStats(p.stacks);
         this.predictor?.setModifiers(this.modifiersFromStats());
@@ -385,17 +453,38 @@ export class Game {
   }
 
   private robotPosition(id: number): THREE.Vector3 | null {
-    const v = this.views.get(id);
-    return v ? v.root.position : null;
+    const v = this.fleet.get(id);
+    return v ? v.position : null;
   }
 
   private localPosition(): THREE.Vector3 {
-    return this.views.get(this.myId)?.root.position.clone() ?? this.deathPos.clone();
+    return this.fleet.get(this.myId)?.position.clone() ?? this.deathPos.clone();
   }
 
   private traumaFrom(p: THREE.Vector3, radius: number, strength: number): void {
-    const d = this.localPosition().distanceTo(p);
+    const me = this.fleet.get(this.myId);
+    const d = (me ? me.position : this.deathPos).distanceTo(p);
     if (d < radius) this.cameraCtl.addTrauma(strength * (1 - d / radius));
+  }
+
+  /** Points the HUD hit indicator at a world position (relative to the view). */
+  private indicateHitFrom(p: Vec3, amount: number): void {
+    const me = this.fleet.get(this.myId);
+    if (!me) return;
+    const cam = this.renderer.camera;
+    _dir.set(p.x - me.position.x, 0, p.z - me.position.z);
+    if (_dir.lengthSq() < 0.01) return;
+    cam.getWorldDirection(_v).setY(0).normalize();
+    _v2.crossVectors(_v, UP);
+    const angle = Math.atan2(_dir.dot(_v2), _dir.dot(_v));
+    this.ui.showHitIndicator(angle, amount);
+  }
+
+  private muzzleFlashFor(v: RobotVisual, barrel: number): void {
+    this.fleet.muzzleWorld(v, barrel, _v);
+    v.onFire();
+    _dir.set(Math.sin(v.aimYaw) * Math.cos(v.barrelPitch), Math.sin(v.barrelPitch), Math.cos(v.aimYaw) * Math.cos(v.barrelPitch));
+    this.vfx.muzzleFlash(_v, _dir, _c.setHex(this.colorOf(v.id)));
   }
 
   private handleEvent(e: GameEvent): void {
@@ -403,57 +492,72 @@ export class Game {
     switch (e.k) {
       case 'shot': {
         if (e.owner === this.myId) return;
-        const p = new THREE.Vector3(e.p.x, e.p.y, e.p.z);
-        const dir = new THREE.Vector3(e.v.x, e.v.y, e.v.z).normalize();
-        this.projectiles.spawn(e.owner, e.p, e.v, e.bounces, this.colorOf(e.owner), e.pid, '', false);
+        this.projectiles.spawn(e.owner, e.p, e.v, e.bounces, this.colorOf(e.owner), e.pid, -1, e.b, false);
         // The server already flew this shell `ff` seconds (hitscan assist).
         if (e.ff > 0) this.projectiles.fastForward(e.pid, e.ff);
-        this.vfx.muzzleFlash(p, dir);
-        this.audio.cannon(p, cam, false);
+        const v = this.fleet.get(e.owner);
+        if (v) this.muzzleFlashFor(v, e.b);
+        this.audio.cannon(_v.set(e.p.x, e.p.y, e.p.z), cam, false);
         return;
       }
       case 'bounce':
         this.projectiles.correctBounce(e.pid, e.p, e.v);
         return;
       case 'impact': {
-        const p = new THREE.Vector3(e.p.x, e.p.y, e.p.z);
         if (e.owner !== this.myId) this.projectiles.removeByServerPid(e.pid);
         if (e.target < 0) return;
-        const n = new THREE.Vector3(e.n.x, e.n.y, e.n.z);
-        this.views.get(e.target)?.flashHit();
+        const target = this.fleet.get(e.target);
+        target?.onDamaged();
+        const p = _v.set(e.p.x, e.p.y, e.p.z);
         // Our own hits are drawn from SHOT_RESULT (onShotResult); everyone else's from this event.
         if (e.owner !== this.myId) {
-          this.vfx.impactSparks(p, n, new THREE.Color(this.colorOf(e.owner)), 1.2);
+          this.vfx.impact(p, _n.set(e.n.x, e.n.y, e.n.z), 'robot', _c.setHex(this.colorOf(e.owner)), 1.2);
           this.audio.impact(p, cam, true);
         }
-        if (e.target === this.myId) this.onLocalDamaged(e.dmg);
+        if (e.target === this.myId) {
+          const shooter = this.robotPosition(e.owner);
+          if (shooter) this.indicateHitFrom(shooter, e.dmg);
+          this.onLocalDamaged(e.dmg);
+        }
         return;
       }
       case 'dmg': {
         const p = new THREE.Vector3(e.p.x, e.p.y, e.p.z);
-        this.views.get(e.target)?.flashHit();
-        if (e.target === this.myId) this.onLocalDamaged(e.amount);
-        else if (e.source === this.myId) this.ui.spawnNumber(p, String(e.amount), 'dealt');
+        this.fleet.get(e.target)?.onDamaged();
+        if (e.target === this.myId) {
+          const src = e.source >= 0 ? this.robotPosition(e.source) : null;
+          this.indicateHitFrom(src ?? p, e.amount);
+          this.onLocalDamaged(e.amount);
+        } else if (e.source === this.myId) this.ui.spawnNumber(p, String(e.amount), 'dealt');
         return;
       }
-      case 'heal':
+      case 'heal': {
         if (e.target === this.myId) this.ui.spawnNumber(this.localPosition(), `+${e.amount}`, 'heal');
-        return;
-      case 'death': {
-        const view = this.views.get(e.id);
-        const p = new THREE.Vector3(e.p.x, e.p.y, e.p.z);
-        if (view) {
-          this.debris.spawn(this.factory.createDebris(view.model), e.p, e.q, e.v);
-          view.setVisible(false);
+        // Leech Core: health drained from `from` into `target`.
+        if (e.from !== undefined) {
+          const a = this.robotPosition(e.from);
+          const b = this.robotPosition(e.target);
+          if (a && b) this.vfx.leechTether(a, b);
         }
-        this.vfx.explosion(p, 1.15, new THREE.Color(this.colorOf(e.id)));
+        return;
+      }
+      case 'death': {
+        const v = this.fleet.get(e.id);
+        const p = new THREE.Vector3(e.p.x, e.p.y, e.p.z);
+        if (v) {
+          this.debris.spawn(this.fleet.createDebris(v), e.p, e.q, e.v);
+          v.visible = false;
+        }
+        this.vfx.explosion(p, 1.15, _c.setHex(this.colorOf(e.id)));
         this.audio.explosion(p, cam, 1);
         this.traumaFrom(p, 26, 0.7);
         if (e.id === this.myId) {
           this.deathPos.copy(p);
           this.respawnAt = performance.now() + 3000;
+          this.killerId = e.killer;
           this.killerName = e.killer >= 0 ? this.players.get(e.killer)?.name ?? '' : '';
           this.cameraCtl.addTrauma(0.8);
+          this.cameraCtl.startDeathCam(this.input.viewYaw);
           this.renderer.pulseChromatic(1);
         }
         return;
@@ -467,14 +571,20 @@ export class Game {
         if (e.killer === this.myId && victim) {
           this.ui.spawnNumber(this.localPosition(), `+100 XP  ${victim.name} destroyed`, 'crit');
           this.ui.showHitmarker(true);
-          this.audio.hitMarker();
-        }
-        else if (e.assists.includes(this.myId)) this.ui.spawnNumber(this.localPosition(), '+40 XP assist', 'heal');
+          this.ui.showKillBanner(victim.name, victim.color, '+100 XP');
+          this.audio.killConfirm();
+          this.cameraCtl.punchIn(1);
+          // Hitstop: visuals (not the simulation) slow down for a beat.
+          this.hitstop = HITSTOP_S;
+        } else if (e.assists.includes(this.myId)) this.ui.spawnNumber(this.localPosition(), '+40 XP assist', 'heal');
         return;
       }
       case 'respawn': {
-        const view = this.views.get(e.id);
-        view?.setVisible(true);
+        const v = this.fleet.get(e.id);
+        if (v) {
+          v.visible = true;
+          v.resetMotion();
+        }
         this.interp.delete(e.id);
         if (e.id === this.myId) {
           this.ui.setCenterMessage('');
@@ -484,7 +594,7 @@ export class Game {
       }
       case 'levelup': {
         const pos = this.robotPosition(e.id);
-        if (pos) this.vfx.shockwave(pos.clone(), 6, new THREE.Color(3, 2, 0.4), 0.7);
+        if (pos) this.vfx.levelUp(pos, _c.setHex(this.colorOf(e.id)));
         if (e.id === this.myId) {
           this.audio.levelUp();
           this.ui.spawnNumber(this.localPosition(), `LEVEL ${e.level}`, 'crit');
@@ -496,6 +606,10 @@ export class Game {
       case 'emp': {
         const p = new THREE.Vector3(e.p.x, e.p.y, e.p.z);
         this.vfx.empBurst(p, e.r);
+        for (const id of e.hits) {
+          const t = this.robotPosition(id);
+          if (t) this.vfx.empArc(p, t);
+        }
         this.audio.emp(p, cam);
         if (e.hits.includes(this.myId)) {
           this.cameraCtl.addTrauma(0.6);
@@ -505,20 +619,20 @@ export class Game {
       }
       case 'dash': {
         if (e.id === this.myId) return;
-        const view = this.views.get(e.id);
-        if (view) this.dashEffect(view);
+        const v = this.fleet.get(e.id);
+        if (v) this.dashEffect(v);
         return;
       }
       case 'mineBoom': {
         const p = new THREE.Vector3(e.p.x, e.p.y, e.p.z);
-        this.vfx.explosion(p, 0.7, new THREE.Color(this.colorOf(e.owner)));
+        this.vfx.explosion(p, 0.7, _c.setHex(this.colorOf(e.owner)));
         this.audio.explosion(p, cam, 0.6);
         this.traumaFrom(p, 16, 0.45);
         return;
       }
       case 'ram': {
         const p = new THREE.Vector3(e.p.x, e.p.y, e.p.z);
-        this.vfx.impactSparks(p, new THREE.Vector3(0, 1, 0), new THREE.Color(1, 0.8, 0.5), 1.8);
+        this.vfx.impact(p, UP, 'metal', _c.setRGB(1, 0.8, 0.5), 1.8);
         this.audio.ram(p, cam, e.speed);
         if (e.a === this.myId || e.b === this.myId) this.cameraCtl.addTrauma(Math.min(0.7, e.speed * 0.04));
         return;
@@ -546,15 +660,13 @@ export class Game {
     this.audio.hurt();
   }
 
-  private dashEffect(view: RobotView): void {
-    const root = view.root;
-    for (const n of view.model.nozzleLocal) {
-      const wp = n.clone().applyQuaternion(root.quaternion).add(root.position);
-      const back = new THREE.Vector3(0, 0, -1).applyQuaternion(root.quaternion);
-      for (let i = 0; i < 14; i++) this.vfx.exhaust(wp, back, false);
-    }
-    this.vfx.shockwave(root.position.clone(), 3.5, new THREE.Color(3, 1.6, 0.5), 0.35);
-    this.audio.dash(root.position, this.renderer.camera);
+  private dashEffect(v: RobotVisual): void {
+    v.onDash();
+    this.fleet.chassisDirection(v, BACK, _dir);
+    for (const n of NOZZLE_TIPS) this.vfx.dashThrusters(this.fleet.chassisPoint(v, n, _v), _dir);
+    this.vfx.shockwave(v.position, 3.5, _c.setRGB(3, 1.6, 0.5), 0.35);
+    this.audio.dash(v.position, this.renderer.camera);
+    if (v.id === this.myId) this.renderer.dashBlur(1);
   }
 
   // ------------------------------------------------------------------ simulation
@@ -582,33 +694,32 @@ export class Game {
       }
     }
     const lc = this.predictor.controller;
-    const meAlive = latest?.robots.get(this.myId) ? ((latest.robots.get(this.myId)!.flags & RobotFlags.ALIVE) !== 0) : false;
+    const meState = latest?.robots.get(this.myId);
+    const meAlive = meState ? (meState.flags & RobotFlags.ALIVE) !== 0 : false;
     if (lc && meAlive) this.setHitTarget(n++, this.myId, lc.body.translation(), lc.body.rotation());
     this.hitTargetCount = n;
     this.projectiles.setTargets(this.hitTargets, n);
 
-    const me = latest?.robots.get(this.myId);
-    if (me && this.predictor.active && this.connected) {
-      const alive = (me.flags & RobotFlags.ALIVE) !== 0;
+    if (meState && this.predictor.active && this.connected) {
       const playing = this.phase === MatchPhase.PLAYING;
       const frame = this.input.sample();
       this.solveLocalAim(frame, renderT);
-      if (!playing) {
+      if (!playing || this.menu.isOpen) {
         frame.throttle = 0;
         frame.steer = 0;
         frame.buttons = 0;
       }
       this.lastThrottle = frame.throttle;
       this.net.sendInput(frame);
-      if (alive) {
+      if (meAlive) {
         this.predictor.applyInput(frame, dt);
         if (this.predictor.lastDashed) {
-          const v = this.views.get(this.myId);
+          const v = this.fleet.get(this.myId);
           if (v) this.dashEffect(v);
         }
       }
       this.localFireCooldown = Math.max(0, this.localFireCooldown - dt);
-      if (alive && playing && !this.predictor.stunned && (frame.buttons & Buttons.FIRE) && this.localFireCooldown <= 0) this.fireLocal(frame);
+      if (meAlive && playing && !this.predictor.stunned && (frame.buttons & Buttons.FIRE) && this.localFireCooldown <= 0) this.fireLocal(frame);
     }
 
     this.physics.step();
@@ -632,7 +743,7 @@ export class Game {
   private solveLocalAim(frame: InputFrame, renderT: number): void {
     const c = this.predictor.controller;
     frame.viewT = renderT;
-    if (!c) {
+    if (!c || this.cameraCtl.deathCamActive) {
       this.aimValid = false;
       frame.aimYaw = this.input.viewYaw;
       frame.aimPitch = 0;
@@ -665,10 +776,11 @@ export class Game {
     // Same shot spec (origin, direction, seeded spread) the server computes for this input seq.
     const shots = computeShots(c.body.translation(), c.body.rotation(), frame.aimYaw, frame.aimPitch, st.projectileCount, this.myId, frame.seq);
     const color = this.colorOf(this.myId);
+    const v = this.fleet.get(this.myId);
     for (const s of shots) {
-      const v = { x: s.dir.x * cfg.projectileSpeed, y: s.dir.y * cfg.projectileSpeed, z: s.dir.z * cfg.projectileSpeed };
-      this.projectiles.spawn(this.myId, s.origin, v, st.ricochetBounces, color, 0, `${frame.seq}:${s.barrel}`, true);
-      this.vfx.muzzleFlash(new THREE.Vector3(s.origin.x, s.origin.y, s.origin.z), new THREE.Vector3(s.dir.x, s.dir.y, s.dir.z));
+      const vel = { x: s.dir.x * cfg.projectileSpeed, y: s.dir.y * cfg.projectileSpeed, z: s.dir.z * cfg.projectileSpeed };
+      this.projectiles.spawn(this.myId, s.origin, vel, st.ricochetBounces, color, 0, frame.seq, s.barrel, true);
+      if (v) this.muzzleFlashFor(v, s.barrel);
     }
     this.audio.cannon(null, null, true);
     this.cameraCtl.addTrauma(0.1);
@@ -678,7 +790,8 @@ export class Game {
 
   private readonly loop = (now: number): void => {
     requestAnimationFrame(this.loop);
-    const frameDt = Math.min(0.1, (now - this.lastFrame) / 1000);
+    const frameMs = now - this.lastFrame;
+    const frameDt = Math.min(0.1, frameMs / 1000);
     this.lastFrame = now;
     this.time += frameDt;
 
@@ -688,7 +801,7 @@ export class Game {
         this.fixedUpdate(FIXED_DT);
         this.accumulator -= FIXED_DT;
       }
-      this.renderFrame(frameDt, this.accumulator / FIXED_DT);
+      this.renderFrame(frameDt, this.accumulator / FIXED_DT, frameMs);
     }
     this.gui?.stats.update();
   };
@@ -709,119 +822,155 @@ export class Game {
     const c = this.predictor.controller;
     if (!c) return null;
     const v = c.vehicle;
-    const t: WheelTelemetry = { suspension: [], rotation: [], steering: [] };
+    const t = this.telemetry;
     for (let i = 0; i < WHEEL_ANCHORS.length; i++) {
-      t.suspension.push(v.wheelSuspensionLength(i) ?? physicsConfig.suspensionRestLength);
-      t.rotation.push(v.wheelRotation(i) ?? 0);
-      t.steering.push(v.wheelSteering(i) ?? 0);
+      t.suspension[i] = v.wheelSuspensionLength(i) ?? physicsConfig.suspensionRestLength;
+      t.rotation[i] = v.wheelRotation(i) ?? 0;
+      t.steering[i] = v.wheelSteering(i) ?? 0;
+      t.contact[i] = v.wheelIsInContact(i);
     }
     return t;
   }
 
-  private surfaceEffects(view: RobotView, pos: THREE.Vector3, quat: THREE.Quaternion, vel: THREE.Vector3, flags: number, grounded: boolean, dt: number): void {
-    _right.set(1, 0, 0).applyQuaternion(quat);
-    const lateral = Math.abs(vel.dot(_right));
-    const speed = Math.hypot(vel.x, vel.z);
-    if (grounded && (lateral > 3.2 || (speed > 6 && Math.abs(this.lastThrottle) > 0 && view.id === this.myId && lateral > 2))) {
-      const amount = Math.min(3, (lateral - 2) * 0.35) * dt * 60 * 0.35;
-      for (const a of [WHEEL_ANCHORS[2], WHEEL_ANCHORS[3]]) {
-        _v.set(a.x, a.y - physicsConfig.suspensionRestLength - physicsConfig.wheelRadius, a.z).applyQuaternion(quat).add(pos);
-        this.vfx.dust(_v, vel, amount);
-      }
-    }
-    if (flags & RobotFlags.BOOSTING) {
-      const back = new THREE.Vector3(0, 0, -1).applyQuaternion(quat);
-      for (const sx of [-0.25, 0.25]) {
-        _v.set(sx, -0.05, -1.32).applyQuaternion(quat).add(pos);
-        this.vfx.exhaust(_v, back, true);
-      }
-    }
-    if (flags & RobotFlags.STUNNED) this.vfx.stunSparks(pos);
+  /** Pushes a pose + state into a fleet visual. */
+  private poseVisual(v: RobotVisual, pos: THREE.Vector3, quat: THREE.Quaternion, vel: THREE.Vector3, aimYaw: number, aimPitch: number, state: RobotNetState, flags: number, steer: number): void {
+    v.position.copy(pos);
+    v.quaternion.copy(quat);
+    v.velocity.copy(vel);
+    v.aimYaw = aimYaw;
+    v.aimPitch = aimPitch;
+    v.flags = flags;
+    v.hp = state.hp;
+    v.maxHp = state.maxHp;
+    v.steerInput = steer;
   }
 
-  private renderFrame(dt: number, alpha: number): void {
+  /** Visual-only effects that follow a robot: skids, tyre smoke, exhaust, damage, repair, landings. */
+  private robotEffects(v: RobotVisual, grounded: boolean, isMe: boolean, dt: number): void {
+    if (!v.visible) return;
+    const vfx = this.vfx;
+    const t = vfx.time;
+    const lateral = Math.abs(v.lateralSpeed);
+    const slide = grounded && (lateral > 3 || (isMe && Math.abs(this.lastThrottle) > 0 && Math.abs(v.forwardSpeed) < 2 && v.velocity.lengthSq() > 4));
+    const strength = slide ? Math.min(1, (lateral - 2.5) / 5 + 0.3) : 0;
+    this.fleet.chassisDirection(v, RIGHT, _n);
+    for (let i = 0; i < 4; i++) {
+      this.fleet.wheelContact(v, i, _v);
+      vfx.skids.feed(v.id * 4 + i, _v.x, _v.y, _v.z, _n.x, _n.z, 0.3, strength, t);
+      if (strength > 0 && i >= 2) vfx.tireSmoke(_v, v.velocity, strength * dt * 30);
+    }
+    if (v.landingImpact > 0) {
+      vfx.landingDust(v.position, v.landingImpact);
+      if (isMe) this.cameraCtl.addTrauma(Math.min(0.35, v.landingImpact * 0.03));
+    }
+    if (v.flags & RobotFlags.BOOSTING) {
+      this.fleet.chassisDirection(v, BACK, _dir);
+      for (const tip of EXHAUST_TIPS) vfx.exhaust(this.fleet.chassisPoint(v, tip, _v), _dir, true);
+      if (isMe && v.dashTimer <= 0) vfx.dashStreaks(v.position, _dir);
+    }
+    if (v.dashTimer > 0.3) {
+      this.fleet.chassisDirection(v, BACK, _dir);
+      for (const tip of NOZZLE_TIPS) vfx.exhaust(this.fleet.chassisPoint(v, tip, _v), _dir, true);
+    }
+    if (v.damageTier >= 1 && Math.random() < dt * (v.damageTier === 2 ? 10 : 4)) {
+      const p = DAMAGE_POINTS[v.damagePointIndex];
+      vfx.damageSmoke(this.fleet.chassisPoint(v, p, _v), v.damageTier === 2);
+    }
+    if (v.damageTier === 2 && Math.random() < dt * 1.5) {
+      const p = DAMAGE_POINTS[(v.damagePointIndex + 2) % DAMAGE_POINTS.length];
+      vfx.damageSparks(this.fleet.chassisPoint(v, p, _v), this.fleet.chassisDirection(v, UP, _n));
+    }
+    if (v.flags & RobotFlags.STUNNED) vfx.stunSparks(v.position);
+    if ((v.stacks.field_repair ?? 0) > 0 && v.hp < v.maxHp && v.sinceDamaged > 4 && Math.random() < dt * 12) vfx.repairSwirl(v.position);
+  }
+
+  private renderFrame(dt: number, alpha: number, frameMs: number): void {
     this.processEvents();
     const renderT = this.renderTime();
     const latest = this.buffer.latest();
     const me = latest?.robots.get(this.myId);
+    // Hitstop slows only what is drawn (fleet, particles, decals); simulation and netcode run at full speed.
+    this.hitstop = Math.max(0, this.hitstop - dt);
+    const vdt = this.hitstop > 0 ? dt * HITSTOP_SCALE : dt;
 
     // Local robot (predicted + smoothed).
     let camTarget = this.deathPos;
-    let camVel = _vel.set(0, 0, 0);
     let boosting = false;
-    const myView = this.views.get(this.myId);
-    if (me && myView && this.predictor.active) {
+    const myVisual = this.fleet.get(this.myId);
+    if (me && myVisual && this.predictor.active) {
       const alive = (me.flags & RobotFlags.ALIVE) !== 0;
       this.predictor.renderPose(alpha, dt, _pos, _quat);
       const c = this.predictor.controller;
       const v = this.predictor.velocity();
-      camVel = _vel.set(v.x, v.y, v.z);
+      _vel.set(v.x, v.y, v.z);
       boosting = !!c?.sim.boosting;
       let flags = me.flags & ~RobotFlags.BOOSTING;
       if (boosting) flags |= RobotFlags.BOOSTING;
+      myVisual.visible = alive;
       if (alive) {
-        myView.setVisible(true);
-        const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(_quat);
-        myView.update(
-          {
-            position: _pos,
-            quaternion: _quat,
-            aimYaw: this.aimValid ? this.aim.yaw : this.input.viewYaw,
-            aimPitch: this.aimValid ? this.aim.pitch : 0,
-            steer: 0,
-            forwardSpeed: camVel.dot(fwd),
-            flags,
-            wheels: this.wheelTelemetry(),
-          },
-          dt,
-          this.time,
-        );
-        let grounded = false;
-        if (c) for (let i = 0; i < 4; i++) grounded = grounded || c.vehicle.wheelIsInContact(i);
-        this.surfaceEffects(myView, _pos, _quat, camVel, flags, grounded, dt);
-        camTarget = _pos;
+        this.poseVisual(myVisual, _pos, _quat, _vel, this.aimValid ? this.aim.yaw : this.input.viewYaw, this.aimValid ? this.aim.pitch : 0, me, flags, 0);
+        myVisual.setTelemetry(this.wheelTelemetry());
+        camTarget = myVisual.position;
         this.debris.syncRobot(this.myId, _pos, _quat, true);
       } else {
-        myView.setVisible(false);
         this.debris.syncRobot(this.myId, _pos, _quat, false);
       }
-      this.audio.updateEngine(camVel.length(), this.lastThrottle, boosting, alive);
+      this.audio.updateEngine(_vel.length(), this.lastThrottle, boosting, alive);
     }
 
     // Remote robots (interpolated ~100 ms in the past).
-    for (const [id, view] of this.views) {
+    for (const v of this.fleet.visuals.values()) {
+      const id = v.id;
       if (id === this.myId) continue;
       const s = this.buffer.sample(id, renderT, this.interp.get(id) ?? null);
       if (!s) continue;
       this.interp.set(id, s);
       const alive = (s.latest.flags & RobotFlags.ALIVE) !== 0;
+      v.visible = alive;
       if (!alive) {
-        view.setVisible(false);
         this.debris.syncRobot(id, s.position, s.quaternion, false);
         continue;
       }
-      view.setVisible(true);
-      const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(s.quaternion);
-      view.update(
-        { position: s.position, quaternion: s.quaternion, aimYaw: s.aimYaw, aimPitch: s.aimPitch, steer: s.steer, forwardSpeed: s.velocity.dot(fwd), flags: s.latest.flags, wheels: null },
-        dt,
-        this.time,
-      );
-      this.surfaceEffects(view, s.position, s.quaternion, s.velocity, s.latest.flags, Math.abs(s.velocity.y) < 2.5, dt);
+      this.poseVisual(v, s.position, s.quaternion, s.velocity, s.aimYaw, s.aimPitch, s.latest, s.latest.flags, s.steer);
+      v.setTelemetry(null);
       this.debris.syncRobot(id, s.position, s.quaternion, true);
     }
 
-    // Camera, shadows, audio listener.
-    this.cameraCtl.update(camTarget, this.input.viewYaw, this.input.viewPitch, boosting, dt);
+    this.fleet.update(vdt, this.vfx.time, this.groundHeight);
+    for (const v of this.fleet.visuals.values()) {
+      const isMe = v.id === this.myId;
+      let grounded = Math.abs(v.velocity.y) < 2.5;
+      if (isMe) {
+        grounded = false;
+        for (let i = 0; i < 4; i++) grounded = grounded || this.telemetry.contact[i];
+      }
+      this.robotEffects(v, grounded, isMe, vdt);
+    }
+
+    // Camera: death cam orbits the killer for 2 s, otherwise the orbit rig.
+    const cam = this.renderer.camera;
+    const killer = this.killerId >= 0 ? this.fleet.get(this.killerId) : undefined;
+    const deathFocus = killer && killer.visible ? killer.position : this.deathPos;
+    if (!(me && (me.flags & RobotFlags.ALIVE) === 0 && this.cameraCtl.updateDeathCam(deathFocus, dt))) {
+      this.cameraCtl.deathCamActive = false;
+      this.cameraCtl.update(camTarget, this.input.viewYaw, this.input.viewPitch, boosting, dt);
+    }
     this.renderer.followShadow(camTarget);
-    this.audio.setListener(this.renderer.camera.position);
+    this.audio.setListener(cam.position);
 
     // World effects.
-    this.vfx.updateMines(this.buffer.sampleMines(renderT), (o) => this.colorOf(o), this.time);
-    this.projectiles.update();
+    const mines = this.buffer.sampleMines(renderT, this.mineSamples);
+    this.vfx.mines.update(this.mineSamples, mines, this.colorOfFn, this.vfx.time);
+    this.projectiles.render(this.vfx.time);
     this.debris.update();
-    this.vfx.update(dt, this.time);
-    this.arena.update(this.time);
+    this.vfx.update(vdt, cam.position);
+    this.arena.update(this.time, dt);
+    this.dust.update(this.time, this.renderer.renderer.getPixelRatio());
+    this.cableTimer -= dt;
+    if (this.cableTimer <= 0 && this.arena.sparkPoints.length > 0) {
+      this.cableTimer = 1.5 + Math.random() * 4;
+      this.vfx.cableSparks(this.arena.sparkPoints[Math.floor(Math.random() * this.arena.sparkPoints.length)]);
+    }
     this.updateGhost(me);
 
     this.updateHud(me, dt);
@@ -833,11 +982,22 @@ export class Game {
     this.renderer.render(dt);
     this.aimDebug.renderPip(this.renderer.renderer, this.renderer.scene);
 
+    const ps = this.perfSample;
+    ps.frameMs = frameMs;
+    ps.sceneDraws = this.renderer.draws.scene;
+    ps.totalDraws = this.renderer.draws.total;
+    ps.triangles = this.renderer.draws.triangles;
+    const vs = this.vfx.stats(this.vfxStats, this.perf.enabled);
+    ps.particles = vs.particles;
+    ps.lights = vs.lights;
+    ps.preset = this.settings.preset;
+    this.perf.update(dt, ps);
+
     if (this.autoDetect && this.started) {
-      const rec = this.autoDetect.sample(dt);
+      const rec: QualityName | null = this.autoDetect.sample(dt);
       if (rec) {
         console.info(`[quality] auto-detected preset: ${rec}`);
-        this.setQuality(rec, true);
+        this.applySettings(settingsForPreset(rec), true);
       }
     }
   }
@@ -859,6 +1019,14 @@ export class Game {
     }
   }
 
+  private readonly abilitySlots: AbilityDisplay[] = [
+    { id: 'dash', icon: '➤', cooldown: 0, max: 1, key: 'SPACE' },
+    { id: 'emp', icon: 'ϟ', cooldown: 0, max: 1, key: 'SPACE' },
+  ];
+  private readonly abilityList: AbilityDisplay[] = [];
+  private leaderName = '—';
+  private leaderKills = 0;
+
   private updateHud(me: RobotNetState | undefined, dt: number): void {
     const ui = this.ui;
     const w = this.container.clientWidth;
@@ -869,23 +1037,50 @@ export class Game {
     if (me && info) {
       const c = this.predictor.controller;
       ui.updateVitals(me.hp, me.maxHp, info.level, info.xp, info.xpToNext, c ? c.sim.boostEnergy : me.boostEnergy, alive);
-      const abilities: AbilityDisplay[] = [];
-      if (this.myStats.abilities.includes('dash'))
-        abilities.push({ id: 'dash', icon: '➤', cooldown: c ? c.sim.dashCooldown : me.dashCooldown, max: physicsConfig.dashCooldown, key: 'SPACE' });
-      if (this.myStats.abilities.includes('emp')) abilities.push({ id: 'emp', icon: 'ϟ', cooldown: me.empCooldown, max: physicsConfig.empCooldown, key: 'SPACE' });
+      const abilities = this.abilityList;
+      abilities.length = 0;
+      if (this.myStats.abilities.includes('dash')) {
+        const a = this.abilitySlots[0];
+        a.cooldown = c ? c.sim.dashCooldown : me.dashCooldown;
+        a.max = physicsConfig.dashCooldown;
+        abilities.push(a);
+      }
+      if (this.myStats.abilities.includes('emp')) {
+        const a = this.abilitySlots[1];
+        a.cooldown = me.empCooldown;
+        a.max = physicsConfig.empCooldown;
+        abilities.push(a);
+      }
       ui.updateAbilities(abilities);
       ui.setStunned(alive && (me.flags & RobotFlags.STUNNED) !== 0);
     }
 
+    let timeLeft = 0;
     if (this.lastSnap) {
       const elapsed = (this.net.serverNow() - this.lastSnap.t) / 1000;
-      ui.setTimer(this.lastSnap.left - elapsed, this.phase === MatchPhase.RESULTS);
+      timeLeft = this.lastSnap.left - elapsed;
+      ui.setTimer(timeLeft, this.phase === MatchPhase.RESULTS);
     }
+    // Jumbotron: kill leader + match clock (redraws only when the text changes).
+    this.leaderKills = -1;
+    for (const p of this.players.values()) {
+      if (p.kills > this.leaderKills) {
+        this.leaderKills = p.kills;
+        this.leaderName = p.name;
+      }
+    }
+    this.arena.scoreboard.set(this.leaderName, Math.max(0, this.leaderKills), timeLeft);
+
+    // Pointer lock lost (Esc) mid-match: open the settings / pause menu.
+    const locked = this.input.isLocked;
+    if (this.wasLocked && !locked && this.started && this.connected && !this.menu.isOpen && this.phase === MatchPhase.PLAYING) this.menu.show();
+    if (locked && this.menu.isOpen) this.menu.hide();
+    this.wasLocked = locked;
 
     if (me && !alive && this.phase === MatchPhase.PLAYING) {
       const left = Math.max(0, (this.respawnAt - performance.now()) / 1000);
       ui.setCenterMessage('DESTROYED', `${this.killerName ? `by ${this.killerName} — ` : ''}respawning in ${left.toFixed(1)}s`);
-    } else if (this.started && this.connected && !this.input.isLocked && this.phase === MatchPhase.PLAYING) {
+    } else if (this.started && this.connected && !locked && !this.menu.isOpen && this.phase === MatchPhase.PLAYING) {
       ui.setCenterMessage('CLICK TO RESUME', 'mouse aims • 1/2/3 picks cards');
     } else {
       ui.setCenterMessage('');
@@ -894,15 +1089,19 @@ export class Game {
     ui.setScoreboardVisible(this.input.isDown('Tab'));
 
     // The crosshair is the screen centre: the ray the aim solver resolves every tick.
-    ui.setCrosshair(w / 2, h / 2, alive);
+    ui.setCrosshair(w / 2, h / 2, alive && !this.cameraCtl.deathCamActive);
     ui.setCrosshairState(!alive || !this.aimValid ? 'none' : this.aim.clamped ? 'clamped' : this.aim.kind === 'robot' ? 'enemy' : 'none');
 
-    const ps = this.predictor?.stats;
-    ui.setNetInfo(
-      `${this.quality.toUpperCase()}  RTT ${this.net.rtt.toFixed(0)}ms` +
-        (ps ? `\npred err ${ps.lastErrorM.toFixed(3)}m  replay ${ps.replayed}` : '') +
-        `\ndraw ${this.renderer.info.render.calls}  tris ${(this.renderer.info.render.triangles / 1000).toFixed(0)}k`,
-    );
+    this.netInfoTimer -= dt;
+    if (this.netInfoTimer <= 0) {
+      this.netInfoTimer = 0.25;
+      const ps = this.predictor?.stats;
+      ui.setNetInfo(
+        `${this.settings.preset.toUpperCase()}  RTT ${this.net.rtt.toFixed(0)}ms` +
+          (ps ? `\npred err ${ps.lastErrorM.toFixed(3)}m  replay ${ps.replayed}` : '') +
+          `\ndraws ${this.renderer.draws.total}  tris ${(this.renderer.draws.triangles / 1000).toFixed(0)}k`,
+      );
+    }
     ui.update(dt, this.renderer.camera, w, h);
   }
 }

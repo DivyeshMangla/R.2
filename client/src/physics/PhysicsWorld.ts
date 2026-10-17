@@ -6,6 +6,7 @@ import {
   CollisionGroups,
   createPhysicsWorld,
   syncGravity,
+  type ArenaBlockKind,
   type Quat,
   type Vec3,
 } from '@robot-arena/shared';
@@ -23,7 +24,7 @@ interface Proxy {
  */
 export class PhysicsWorld {
   readonly world: World;
-  private readonly envHandles: ReadonlyMap<number, unknown>;
+  private readonly envHandles: ReadonlyMap<number, ArenaBlockKind>;
   private readonly proxies = new Map<number, Proxy>();
   private readonly ownerByCollider = new Map<number, number>();
 
@@ -33,6 +34,11 @@ export class PhysicsWorld {
   }
 
   readonly isEnvironment = (c: Collider): boolean => this.envHandles.has(c.handle);
+
+  /** Arena block kind of an environment collider handle (for surface-specific impact effects). */
+  blockKind(handle: number): ArenaBlockKind | undefined {
+    return this.envHandles.get(handle);
+  }
 
   robotIdFor(c: Collider): number | undefined {
     return this.ownerByCollider.get(c.handle);

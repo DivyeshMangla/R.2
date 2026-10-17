@@ -27,6 +27,8 @@ export interface EnvHit {
   t: number;
   point: Vec3;
   normal: Vec3;
+  /** Rapier collider handle (map to the arena block kind for surface effects). */
+  handle: number;
 }
 
 export interface RobotHit extends HitboxRayHit {
@@ -34,7 +36,7 @@ export interface RobotHit extends HitboxRayHit {
 }
 
 export function makeEnvHit(): EnvHit {
-  return { t: 0, point: { x: 0, y: 0, z: 0 }, normal: { x: 0, y: 1, z: 0 } };
+  return { t: 0, point: { x: 0, y: 0, z: 0 }, normal: { x: 0, y: 1, z: 0 }, handle: -1 };
 }
 
 export function makeRobotHit(): RobotHit {
@@ -67,10 +69,12 @@ export interface StepResult {
   normal: Vec3;
   targetId: number;
   assisted: boolean;
+  /** Environment collider handle for BOUNCE / HIT_ENV (-1 otherwise). */
+  envHandle: number;
 }
 
 export function makeStepResult(): StepResult {
-  return { kind: StepKind.FLY, point: { x: 0, y: 0, z: 0 }, normal: { x: 0, y: 1, z: 0 }, targetId: -1, assisted: false };
+  return { kind: StepKind.FLY, point: { x: 0, y: 0, z: 0 }, normal: { x: 0, y: 1, z: 0 }, targetId: -1, assisted: false, envHandle: -1 };
 }
 
 const _dir: Vec3 = { x: 0, y: 0, z: 0 };
@@ -86,6 +90,7 @@ export function stepProjectile(world: ProjectileWorld, p: ProjectileState, dt: n
   const cfg = physicsConfig;
   out.targetId = -1;
   out.assisted = false;
+  out.envHandle = -1;
   p.age += dt;
   if (p.age > p.lifetime) return (out.kind = StepKind.EXPIRE);
   p.vel.y -= cfg.projectileGravity * dt;
@@ -129,6 +134,7 @@ export function stepProjectile(world: ProjectileWorld, p: ProjectileState, dt: n
   }
   out.normal.x = nx; out.normal.y = ny; out.normal.z = nz;
   copy(_env.point, out.point);
+  out.envHandle = _env.handle;
   p.dist += _env.t;
   if (p.bouncesLeft > 0) {
     p.bouncesLeft -= 1;
@@ -164,6 +170,7 @@ export function createEnvCaster(world: World): ProjectileWorld['castEnv'] {
     out.normal.x = hit.normal.x;
     out.normal.y = hit.normal.y;
     out.normal.z = hit.normal.z;
+    out.handle = hit.collider.handle;
     return true;
   };
 }

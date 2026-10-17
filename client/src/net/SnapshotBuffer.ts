@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { decodeRobot, lerpAngle, type MineWire, type RobotNetState, type SnapshotMsg } from '@robot-arena/shared';
+import type { MineSample } from '../render/vfx/MineRenderer';
 
 export interface StoredSnapshot {
   t: number;
@@ -47,26 +48,39 @@ export class SnapshotBuffer {
     return this.snaps[this.snaps.length - 1];
   }
 
-  /** Finds the snapshot pair bracketing `t`. */
-  private bracket(t: number): [StoredSnapshot, StoredSnapshot, number] | null {
+  // Result of the last bracket() call (fields, so sampling never allocates).
+  private brA: StoredSnapshot | null = null;
+  private brB: StoredSnapshot | null = null;
+  private brAlpha = 0;
+
+  /** Finds the snapshot pair bracketing `t` into brA / brB / brAlpha. */
+  private bracket(t: number): boolean {
     const s = this.snaps;
-    if (s.length === 0) return null;
-    if (s.length === 1 || t <= s[0].t) return [s[0], s[0], 0];
+    if (s.length === 0) return false;
+    if (s.length === 1 || t <= s[0].t) {
+      this.brA = this.brB = s[0];
+      this.brAlpha = 0;
+      return true;
+    }
     for (let i = s.length - 1; i > 0; i--) {
       const a = s[i - 1];
       const b = s[i];
       if (t >= a.t) {
         const span = b.t - a.t;
-        return [a, b, span > 0 ? (t - a.t) / span : 1];
+        this.brA = a;
+        this.brB = b;
+        this.brAlpha = span > 0 ? (t - a.t) / span : 1;
+        return true;
       }
     }
-    return [s[0], s[0], 0];
+    this.brA = this.brB = s[0];
+    this.brAlpha = 0;
+    return true;
   }
 
   sample(id: number, renderT: number, out: InterpolatedRobot | null): InterpolatedRobot | null {
-    const br = this.bracket(renderT);
-    if (!br) return null;
-    const [a, b, alpha] = br;
+    if (!this.bracket(renderT) || !this.brA || !this.brB) return null;
+    const a = this.brA, b = this.brB, alpha = this.brAlpha;
     const latestSnap = this.latest();
     const latest = latestSnap?.robots.get(id);
     if (!latest) return null;
@@ -114,21 +128,32 @@ export class SnapshotBuffer {
     return res;
   }
 
-  /** Mines interpolated by id between the bracketing snapshots. */
-  sampleMines(renderT: number): { id: number; owner: number; p: THREE.Vector3 }[] {
-    const br = this.bracket(renderT);
-    if (!br) return [];
-    const [a, b, alpha] = br;
-    const prev = new Map<number, MineWire>(a.mines.map((m) => [m[0], m]));
+  /**
+   * Mines interpolated by id between the bracketing snapshots, written into
+   * `out` (grown on demand, reused every frame). Returns the count.
+   */
+  sampleMines(renderT: number, out: MineSample[]): number {
+    if (!this.bracket(renderT) || !this.brA || !this.brB) return 0;
+    const a = this.brA, b = this.brB, alpha = this.brAlpha;
     const t = Math.min(1, Math.max(0, alpha));
-    return b.mines.map((m) => {
-      const pm = prev.get(m[0]) ?? m;
-      return {
-        id: m[0],
-        owner: m[4],
-        p: new THREE.Vector3((pm[1] + (m[1] - pm[1]) * t) / 100, (pm[2] + (m[2] - pm[2]) * t) / 100, (pm[3] + (m[3] - pm[3]) * t) / 100),
-      };
-    });
+    let n = 0;
+    for (const m of b.mines) {
+      let pm = m;
+      for (const o of a.mines) {
+        if (o[0] === m[0]) {
+          pm = o;
+          break;
+        }
+      }
+      if (n >= out.length) out.push({ id: 0, owner: 0, x: 0, y: 0, z: 0 });
+      const s = out[n++];
+      s.id = m[0];
+      s.owner = m[4];
+      s.x = (pm[1] + (m[1] - pm[1]) * t) / 100;
+      s.y = (pm[2] + (m[2] - pm[2]) * t) / 100;
+      s.z = (pm[3] + (m[3] - pm[3]) * t) / 100;
+    }
+    return n;
   }
 
   clear(): void {

@@ -73,6 +73,11 @@ export class AudioSystem {
     if (this.master && this.ctx) this.master.gain.setTargetAtTime(m ? 0 : this.volume, this.ctx.currentTime, 0.05);
   }
 
+  setVolume(v: number): void {
+    this.volume = Math.max(0, Math.min(1, v));
+    if (this.master && this.ctx && !this.muted) this.master.gain.setTargetAtTime(this.volume, this.ctx.currentTime, 0.05);
+  }
+
   setListener(pos: THREE.Vector3): void {
     this.listenerPos.copy(pos);
   }
@@ -157,6 +162,27 @@ export class AudioSystem {
       this.tone(dest, t, 'triangle', f, f * 0.92, 0.25, 0.18);
       this.tone(dest, t, 'sine', f * 2.37, f * 2.2, 0.18, 0.08);
     }
+  }
+
+  /** A debris chunk clanking off the floor or a wall. */
+  debrisClank(pos: THREE.Vector3, camera: THREE.Camera, strength: number): void {
+    const { gain, pan } = this.spatial(pos, camera);
+    const dest = this.out(Math.min(0.6, gain * 0.25 * Math.min(2, strength / 4)), pan);
+    if (!dest || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    const f = 380 + Math.random() * 420;
+    this.tone(dest, t, 'triangle', f, f * 0.7, 0.12, 0.35);
+    this.noiseBurst(dest, t, 0.05, 'bandpass', 2400, 900, 2, 0.5);
+  }
+
+  /** Confirmed kill: heavier, two-tone sting on top of the hitmarker. */
+  killConfirm(): void {
+    const dest = this.out(0.45, 0);
+    if (!dest || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    this.tone(dest, t, 'sawtooth', 220, 110, 0.25, 0.35);
+    this.tone(dest, t + 0.05, 'square', 1320, 1250, 0.12, 0.2);
+    this.tone(dest, t + 0.12, 'square', 1760, 1700, 0.18, 0.18);
   }
 
   hitMarker(): void {

@@ -518,17 +518,13 @@ export class RobotFleet {
     if (turretPaint) chunk(turretPaint.geometry, paintMat(), { x: 0.48, y: 0.24, z: 0.48 }, new THREE.Vector3(0, TURRET_MOUNT.y, 0));
     const barrel = this.partByName.get('barrel.single.steel');
     if (barrel) chunk(barrel.geometry, steelMat(), { x: 0.12, y: 0.12, z: 0.65 }, new THREE.Vector3(0, TURRET_MOUNT.y + BARREL_MOUNT.y, 0.4));
+    // Loose wheels: tyre only (one draw call each; the rim is hidden inside it at a distance).
     const tire = this.partByName.get('wheel.tire');
-    const rim = this.partByName.get('wheel.rim');
-    if (tire && rim) {
+    if (tire) {
       for (const a of WHEEL_ANCHORS) {
-        const g = new THREE.Group();
         const t = new THREE.Mesh(tire.geometry, m.rubber.clone());
-        const r = new THREE.Mesh(rim.geometry, m.rim.clone());
-        t.castShadow = true;
-        g.add(t, r);
         const R = physicsConfig.wheelRadius;
-        pieces.push({ object: g, half: { x: 0.17, y: R, z: R }, offset: new THREE.Vector3(a.x, a.y - physicsConfig.suspensionRestLength, a.z) });
+        pieces.push({ object: t, half: { x: 0.17, y: R, z: R }, offset: new THREE.Vector3(a.x, a.y - physicsConfig.suspensionRestLength, a.z) });
       }
     }
     return pieces;

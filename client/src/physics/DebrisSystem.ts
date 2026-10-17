@@ -11,22 +11,29 @@ import {
   type Quat,
   type Vec3,
 } from '@robot-arena/shared';
-import type { DebrisPiece } from '../render/RobotModelFactory';
-import type { VFXSystem } from '../render/VFXSystem';
+import type { DebrisPiece } from '../render/robot/RobotFleet';
+import type { VFXSystem } from '../render/vfx/VFXSystem';
 
 interface Chunk {
   body: RigidBody;
   object: THREE.Object3D;
   materials: THREE.Material[];
   age: number;
+  /** Speed last fixed step, for bounce detection. */
+  speed: number;
+  bounceCooldown: number;
 }
+
+/** Called when a chunk hits something hard enough to clank (world position, impact speed). */
+export type DebrisBounceHandler = (pos: THREE.Vector3, speed: number) => void;
 
 interface RobotProxy {
   body: RigidBody;
   seen: boolean;
 }
 
-const MAX_CHUNKS = 120;
+/** Live chunk cap (two fresh wrecks): every chunk is its own draw call. */
+const MAX_CHUNKS = 20;
 
 /**
  * Death debris: a dedicated Rapier world (arena + kinematic robot proxies) so
@@ -39,22 +46,30 @@ export class DebrisSystem {
   private readonly proxies = new Map<number, RobotProxy>();
   private readonly scene: THREE.Scene;
   private readonly vfx: VFXSystem;
+  private readonly onBounce: DebrisBounceHandler;
+  private readonly rot = new THREE.Quaternion();
+  private readonly center = new THREE.Vector3();
+  private readonly blastOrigin = new THREE.Vector3();
+  private readonly wp = new THREE.Vector3();
+  private readonly away = new THREE.Vector3();
+  private readonly bouncePos = new THREE.Vector3();
 
-  constructor(scene: THREE.Scene, vfx: VFXSystem) {
+  constructor(scene: THREE.Scene, vfx: VFXSystem, onBounce: DebrisBounceHandler) {
     this.scene = scene;
     this.vfx = vfx;
+    this.onBounce = onBounce;
     this.world = createPhysicsWorld();
     buildArenaColliders(this.world);
   }
 
   spawn(pieces: DebrisPiece[], p: Vec3, q: Quat, v: Vec3): void {
     const cfg = physicsConfig;
-    const rot = new THREE.Quaternion(q.x, q.y, q.z, q.w);
-    const center = new THREE.Vector3(p.x, p.y, p.z);
-    const blastOrigin = center.clone().add(new THREE.Vector3(0, -0.6, 0));
+    const rot = this.rot.set(q.x, q.y, q.z, q.w);
+    const center = this.center.set(p.x, p.y, p.z);
+    const blastOrigin = this.blastOrigin.copy(center).setY(center.y - 0.6);
     for (const piece of pieces) {
       while (this.chunks.length >= MAX_CHUNKS) this.removeChunk(0);
-      const wp = piece.offset.clone().applyQuaternion(rot).add(center);
+      const wp = this.wp.copy(piece.offset).applyQuaternion(rot).add(center);
       const body = this.world.createRigidBody(
         RAPIER.RigidBodyDesc.dynamic()
           .setTranslation(wp.x, wp.y, wp.z)
@@ -71,25 +86,30 @@ export class DebrisSystem {
           .setCollisionGroups(CollisionGroups.DEBRIS),
         body,
       );
-      const away = wp.clone().sub(blastOrigin).normalize();
+      const away = this.away.copy(wp).sub(blastOrigin).normalize();
       const mass = body.mass();
       const kick = cfg.debrisImpulse * (0.6 + Math.random() * 0.8);
       body.setLinvel({ x: v.x * 0.6, y: v.y * 0.6, z: v.z * 0.6 }, true);
       body.applyImpulse({ x: away.x * kick * mass, y: (Math.abs(away.y) + 0.8) * kick * mass, z: away.z * kick * mass }, true);
       body.setAngvel({ x: (Math.random() - 0.5) * 18, y: (Math.random() - 0.5) * 18, z: (Math.random() - 0.5) * 18 }, true);
 
+      // RobotFleet.createDebris already gives every chunk its own material; cloning
+      // would drop the onBeforeCompile wear/scorch patch.
       const materials: THREE.Material[] = [];
+      // Only the big hull halves cast shadows (each caster costs a second draw call).
+      const big = piece.half.x * piece.half.y * piece.half.z > 0.05;
       piece.object.traverse((o) => {
         if (o instanceof THREE.Mesh) {
-          const m = (o.material as THREE.Material).clone();
+          const m = o.material as THREE.Material;
           m.transparent = true;
-          o.material = m;
-          o.castShadow = true;
+          o.castShadow = big;
           materials.push(m);
         }
       });
+      piece.object.position.copy(wp);
+      piece.object.quaternion.copy(rot);
       this.scene.add(piece.object);
-      this.chunks.push({ body, object: piece.object, materials, age: 0 });
+      this.chunks.push({ body, object: piece.object, materials, age: 0, speed: 0, bounceCooldown: 0 });
     }
   }
 
@@ -110,7 +130,7 @@ export class DebrisSystem {
     }
   }
 
-  pruneRobots(liveIds: Set<number>): void {
+  pruneRobots(liveIds: { has(id: number): boolean }): void {
     for (const [id, proxy] of this.proxies) {
       if (!liveIds.has(id)) {
         this.world.removeRigidBody(proxy.body);
@@ -139,7 +159,20 @@ export class DebrisSystem {
     for (let i = this.chunks.length - 1; i >= 0; i--) {
       const c = this.chunks[i];
       c.age += dt;
-      if (c.age >= life) this.removeChunk(i);
+      if (c.age >= life) {
+        this.removeChunk(i);
+        continue;
+      }
+      // A sharp drop in speed means it hit something: clank.
+      const v = c.body.linvel();
+      const speed = Math.hypot(v.x, v.y, v.z);
+      c.bounceCooldown = Math.max(0, c.bounceCooldown - dt);
+      if (c.speed - speed > 3 && c.speed > 4 && c.bounceCooldown <= 0) {
+        const t = c.body.translation();
+        this.onBounce(this.bouncePos.set(t.x, t.y, t.z), c.speed - speed);
+        c.bounceCooldown = 0.25;
+      }
+      c.speed = speed;
     }
   }
 

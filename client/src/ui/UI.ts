@@ -64,6 +64,12 @@ export class UI {
   private readonly resultsOverlay: HTMLDivElement;
   private readonly resultsBox: HTMLDivElement;
   private readonly netInfo: HTMLDivElement;
+  private readonly hitArcs: { node: HTMLDivElement; t: number }[] = [];
+  private nextArc = 0;
+  private readonly killBanner: HTMLDivElement;
+  private readonly killBannerName: HTMLDivElement;
+  private readonly killBannerSub: HTMLDivElement;
+  private killBannerT = 0;
   private readonly dmgNumbers: DamageNumber[] = [];
   private hitTimer = 0;
   private flashTimer = 0;
@@ -115,6 +121,12 @@ export class UI {
     this.centerMsg = el('div', 'center-msg', this.hud);
     this.statusTag = el('div', 'status-tag panel', this.hud, 'STUNNED');
     this.netInfo = el('div', 'net-info', this.hud);
+    const arcs = el('div', 'hit-indicator', this.hud);
+    for (let i = 0; i < 4; i++) this.hitArcs.push({ node: el('div', 'hit-arc', arcs), t: 0 });
+    this.killBanner = el('div', 'kill-banner', this.hud);
+    el('div', 'tag', this.killBanner, 'ELIMINATED');
+    this.killBannerName = el('div', 'name', this.killBanner);
+    this.killBannerSub = el('div', 'sub', this.killBanner);
 
     this.cards = el('div', 'cards', this.hud);
     el('div', 'title', this.cards, 'LEVEL UP — CHOOSE AN UPGRADE');
@@ -141,9 +153,11 @@ export class UI {
       ['<kbd>Space</kbd>', 'Ability (from power-ups)'],
       ['<kbd>1</kbd><kbd>2</kbd><kbd>3</kbd>', 'Pick level-up card'],
       ['<kbd>Tab</kbd>', 'Scoreboard'],
-      ['<kbd>`</kbd> / <kbd>F2</kbd>', 'Debug panel'],
+      ['<kbd>`</kbd> / <kbd>F2</kbd>', 'Tuning panel'],
+      ['<kbd>F3</kbd>', 'Performance overlay'],
+      ['<kbd>F4</kbd> / <kbd>F5</kbd>', 'Aim debug / side view'],
       ['<kbd>M</kbd>', 'Mute'],
-      ['<kbd>Esc</kbd>', 'Release mouse'],
+      ['<kbd>Esc</kbd>', 'Settings (releases mouse)'],
     ];
     for (const [k, d] of rows) {
       el('div', '', controls).innerHTML = k;
@@ -301,6 +315,27 @@ export class UI {
     this.crosshair.classList.add('hit');
   }
 
+  /** Damage direction relative to the view: 0 = in front, +PI/2 = to the right. */
+  showHitIndicator(angle: number, strength: number): void {
+    const a = this.hitArcs[this.nextArc];
+    this.nextArc = (this.nextArc + 1) % this.hitArcs.length;
+    a.t = 0.9;
+    a.node.style.transform = `translate(-50%, -50%) rotate(${angle}rad) translateY(-120px)`;
+    a.node.style.opacity = String(Math.min(1, 0.5 + strength / 40));
+    a.node.classList.add('show');
+  }
+
+  showKillBanner(name: string, color: number, sub: string): void {
+    this.killBannerName.textContent = name;
+    this.killBannerName.style.color = hex(color);
+    this.killBannerSub.textContent = sub;
+    this.killBanner.classList.remove('show');
+    // Restart the CSS animation.
+    void this.killBanner.offsetWidth;
+    this.killBanner.classList.add('show');
+    this.killBannerT = 2.2;
+  }
+
   setCenterMessage(text: string, small = ''): void {
     if (!text) {
       this.centerMsg.textContent = '';
@@ -403,6 +438,15 @@ export class UI {
         this.hitmarker.classList.remove('show', 'kill');
         this.crosshair.classList.remove('hit');
       }
+    }
+    for (const a of this.hitArcs) {
+      if (a.t <= 0) continue;
+      a.t -= dt;
+      if (a.t <= 0) a.node.classList.remove('show');
+    }
+    if (this.killBannerT > 0) {
+      this.killBannerT -= dt;
+      if (this.killBannerT <= 0) this.killBanner.classList.remove('show');
     }
     if (this.flashTimer > 0) {
       this.flashTimer -= dt;
