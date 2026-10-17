@@ -21,30 +21,57 @@ export interface InputFrame {
   /** World yaw of the turret, radians. */
   aimYaw: number;
   buttons: number;
+  /** Barrel pitch from the turret hinge, radians, positive = up. */
+  aimPitch: number;
+  /**
+   * Server time (ms) of the world the player was looking at when this input was
+   * sampled: the client's interpolation render time. Drives lag compensation.
+   * 0 = unknown (no rewind).
+   */
+  viewT: number;
 }
 
-/** Compact wire form: [seq, throttle*127, steer*127, aimYaw*1000, buttons]. */
-export type InputWire = [number, number, number, number, number];
+/**
+ * Compact wire form, v2:
+ *   [seq, throttle*127, steer*127, aimYaw*10000, buttons, aimPitch*10000, viewT ms]
+ * v1 (5 entries, yaw*1000, no pitch/viewT) is still accepted.
+ * The client sends an array of the last few frames per packet so a single lost
+ * packet does not drop a trigger pull; the server ignores seqs it has seen.
+ */
+export type InputWire = [number, number, number, number, number, number, number];
+
+const AIM_Q = 10000;
 
 export function encodeInput(f: InputFrame): InputWire {
-  return [f.seq, Math.round(f.throttle * 127), Math.round(f.steer * 127), Math.round(f.aimYaw * 1000), f.buttons];
+  return [
+    f.seq,
+    Math.round(f.throttle * 127),
+    Math.round(f.steer * 127),
+    Math.round(f.aimYaw * AIM_Q),
+    f.buttons,
+    Math.round(f.aimPitch * AIM_Q),
+    Math.round(f.viewT),
+  ];
 }
 
 export function decodeInput(w: unknown): InputFrame | null {
-  if (!Array.isArray(w) || w.length !== 5) return null;
+  if (!Array.isArray(w) || (w.length !== 5 && w.length !== 7)) return null;
   for (const n of w) if (typeof n !== 'number' || !Number.isFinite(n)) return null;
-  const [seq, t, s, a, b] = w as InputWire;
+  const v2 = w.length === 7;
+  const [seq, t, s, a, b] = w as number[];
   return {
     seq: Math.floor(seq),
     throttle: Math.max(-1, Math.min(1, t / 127)),
     steer: Math.max(-1, Math.min(1, s / 127)),
-    aimYaw: a / 1000,
+    aimYaw: a / (v2 ? AIM_Q : 1000),
     buttons: b & 7,
+    aimPitch: v2 ? Math.max(-1.5, Math.min(1.5, (w[5] as number) / AIM_Q)) : 0,
+    viewT: v2 ? Math.max(0, w[6] as number) : 0,
   };
 }
 
 export function emptyInput(seq = 0): InputFrame {
-  return { seq, throttle: 0, steer: 0, aimYaw: 0, buttons: 0 };
+  return { seq, throttle: 0, steer: 0, aimYaw: 0, buttons: 0, aimPitch: 0, viewT: 0 };
 }
 
 // ---------------------------------------------------------------------------
@@ -78,8 +105,11 @@ export interface RobotNetState {
   flipTimer: number;
   spawnCount: number;
   fireCooldown: number;
+  /** Barrel pitch, radians. */
+  aimPitch: number;
 }
 
+/** Robot snapshot entry. Index 27 (aimPitch*10000) was appended for the pitch-aware turret. */
 export type RobotWire = number[];
 
 const POS_Q = 1000;
@@ -105,6 +135,7 @@ export function encodeRobot(s: RobotNetState): RobotWire {
     Math.round(s.flipTimer * 100),
     s.spawnCount,
     Math.round(s.fireCooldown * 1000),
+    Math.round(s.aimPitch * 10000),
   ];
 }
 
@@ -130,6 +161,7 @@ export function decodeRobot(w: RobotWire): RobotNetState {
     flipTimer: w[24] / 100,
     spawnCount: w[25],
     fireCooldown: w[26] / 1000,
+    aimPitch: (w[27] ?? 0) / 10000,
   };
 }
 
@@ -233,7 +265,12 @@ export interface ResultsMsg {
 // ---------------------------------------------------------------------------
 
 export type GameEvent =
-  | { k: 'shot'; pid: number; owner: number; p: Vec3; v: Vec3; bounces: number }
+  /**
+   * `p`/`v` are the muzzle and launch velocity; the server has already advanced
+   * the shell by `ff` seconds (hitscan assist), so viewers should too.
+   * `seq`/`b` identify the trigger pull (input seq, barrel) for the shooter.
+   */
+  | { k: 'shot'; pid: number; owner: number; p: Vec3; v: Vec3; bounces: number; seq: number; b: number; ff: number }
   | { k: 'impact'; pid: number; p: Vec3; n: Vec3; target: number; dmg: number; owner: number }
   | { k: 'bounce'; pid: number; p: Vec3; v: Vec3 }
   | { k: 'dmg'; target: number; source: number; amount: number; p: Vec3; cause: 'ram' | 'mine' }
@@ -249,6 +286,43 @@ export type GameEvent =
   | { k: 'ram'; a: number; b: number; p: Vec3; speed: number }
   | { k: 'tune'; key: string; value: number }
   | { k: 'matchStart' };
+
+export type ShotMissReason =
+  | 'hit'
+  | 'no contact'
+  | 'blocked'
+  | 'passed over'
+  | 'passed under'
+  | 'out of range'
+  | 'self-collision'
+  | 'tunneled'
+  | 'filtered';
+
+/**
+ * Sent only to the shooter once a shell resolves: the authoritative verdict
+ * used for hitmarkers and the debug hit log.
+ */
+export interface ShotResultMsg {
+  seq: number;
+  b: number;
+  pid: number;
+  /** Server tick the input was processed on. */
+  recvTick: number;
+  /** How far back targets were rewound (ms). */
+  rewindMs: number;
+  aimYaw: number;
+  aimPitch: number;
+  muzzle: Vec3;
+  dir: Vec3;
+  hit: boolean;
+  target: number;
+  point: Vec3;
+  reason: ShotMissReason;
+  assisted: boolean;
+  dmg: number;
+  /** Closest approach to the nearest enemy hitbox (m), for misses. */
+  closest: number;
+}
 
 export interface EventsMsg {
   t: number;
@@ -270,4 +344,5 @@ export const Msg = {
   CARDS_RESOLVED: 'cardsDone',
   RESULTS: 'results',
   PONG: 'pong',
+  SHOT_RESULT: 'shotRes',
 } as const;

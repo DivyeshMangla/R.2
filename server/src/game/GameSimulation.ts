@@ -31,6 +31,7 @@ import {
   type WelcomeMsg,
 } from '@robot-arena/shared';
 import { BotAI } from './BotAI';
+import { LagCompensator, type PoseSource as LagPose } from './LagCompensator';
 import type { DamageCause, GameHost } from './GameHost';
 import { PhysicsWorld } from './PhysicsWorld';
 import { PowerUpSystem } from './PowerUpSystem';
@@ -56,7 +57,10 @@ export class GameSimulation implements GameHost {
   private readonly powerups: PowerUpSystem;
   private readonly progression: ProgressionSystem;
   private readonly ramCooldowns = new Map<string, number>();
-  private readonly startMs = performance.now();
+  private readonly lag = new LagCompensator();
+  private readonly clock: () => number;
+  /** Server time (ms) of the last completed tick; snapshots, events and lag history share it. */
+  private tickTimeMs = 0;
 
   private nextRobotId = 1;
   private tick = 0;
@@ -68,9 +72,12 @@ export class GameSimulation implements GameHost {
   private phaseTimeLeft = MATCH_DURATION_S;
   private humanCounter = 0;
 
-  constructor(net: NetSink) {
+  /** `clock` returns server time in ms (wall clock by default; the aim harness injects a virtual one). */
+  constructor(net: NetSink, clock?: () => number) {
     this.net = net;
-    this.weapons = new WeaponSystem(this);
+    const startMs = performance.now();
+    this.clock = clock ?? (() => performance.now() - startMs);
+    this.weapons = new WeaponSystem(this, this.lag);
     this.powerups = new PowerUpSystem(this);
     this.progression = new ProgressionSystem(this, this.powerups);
     this.balanceBots();
@@ -103,7 +110,7 @@ export class GameSimulation implements GameHost {
   }
 
   serverTimeMs(): number {
-    return performance.now() - this.startMs;
+    return this.clock();
   }
 
   heal(target: ServerRobot, amount: number, sourceId?: number): void {
@@ -294,6 +301,7 @@ export class GameSimulation implements GameHost {
     r.empCooldown = Math.min(r.empCooldown, 3);
     r.spawnCount += 1;
     r.aimYaw = spawn.yaw;
+    r.aimPitch = 0;
     r.lastCombatTime = -1e9;
     this.emit({ k: 'respawn', id: r.id, p: spawn.position, yaw: spawn.yaw });
   }
@@ -327,6 +335,7 @@ export class GameSimulation implements GameHost {
     this.time += dt;
     this.updatePhase(dt);
     const playing = this.phase === MatchPhase.PLAYING;
+    this.weapons.beginTick(this.tick);
 
     for (const r of this.robotMap.values()) {
       const input = this.nextInput(r, dt);
@@ -345,14 +354,18 @@ export class GameSimulation implements GameHost {
         ? { throttle: input.throttle, steer: input.steer, boost: (input.buttons & Buttons.BOOST) !== 0, ability: (input.buttons & Buttons.ABILITY) !== 0 }
         : { throttle: 0, steer: 0, boost: false, ability: false };
       r.aimYaw = input.aimYaw;
+      r.aimPitch = input.aimPitch;
       const res = r.controller.drive(driveInput, dt, stunned);
       if (res.dashed) this.emit({ k: 'dash', id: r.id });
       if (!playing || stunned) continue;
       if (input.buttons & Buttons.ABILITY) this.powerups.tryAbilities(r);
-      if (input.buttons & Buttons.FIRE) this.weapons.tryFire(r, input.aimYaw);
+      if (input.buttons & Buttons.FIRE) this.weapons.tryFire(r, input);
     }
 
     this.physics.step();
+    // History is recorded after the step so each entry is the pose snapshots report for this tick.
+    this.tickTimeMs = this.serverTimeMs();
+    this.lag.record(this.tickTimeMs, this.poses());
 
     this.detectRams();
     this.weapons.update(dt);
@@ -371,6 +384,22 @@ export class GameSimulation implements GameHost {
     }
 
     this.flush(dt);
+  }
+
+  private readonly pose = { id: 0, alive: false, p: { x: 0, y: 0, z: 0 }, q: { x: 0, y: 0, z: 0, w: 1 } };
+
+  /** Allocation-light pose iterator for the lag history (one reused record). */
+  private *poses(): Generator<LagPose> {
+    const out = this.pose;
+    for (const r of this.robotMap.values()) {
+      const t = r.controller.body.translation();
+      const q = r.controller.body.rotation();
+      out.id = r.id;
+      out.alive = r.alive;
+      out.p.x = t.x; out.p.y = t.y; out.p.z = t.z;
+      out.q.x = q.x; out.q.y = q.y; out.q.z = q.z; out.q.w = q.w;
+      yield out;
+    }
   }
 
   private detectRams(): void {
@@ -433,6 +462,7 @@ export class GameSimulation implements GameHost {
     this.phase = MatchPhase.PLAYING;
     this.phaseTimeLeft = MATCH_DURATION_S;
     this.weapons.clear();
+    this.lag.clear();
     this.powerups.clear();
     this.ramCooldowns.clear();
     const spawns = [...SPAWN_POINTS].sort(() => Math.random() - 0.5);
@@ -450,6 +480,7 @@ export class GameSimulation implements GameHost {
       r.empCooldown = 0;
       r.spawnCount += 1;
       r.aimYaw = s.yaw;
+      r.aimPitch = 0;
     }
     this.emit({ k: 'matchStart' });
     this.markRosterDirty();
@@ -457,13 +488,13 @@ export class GameSimulation implements GameHost {
 
   private flush(dt: number): void {
     if (this.events.length > 0) {
-      const msg: EventsMsg = { t: this.serverTimeMs(), e: this.events };
+      const msg: EventsMsg = { t: this.tickTimeMs, e: this.events };
       this.net.broadcast(Msg.EVENTS, msg);
       this.events = [];
     }
     if (this.tick % SNAPSHOT_EVERY_TICKS === 0) {
       const snap: SnapshotMsg = {
-        t: this.serverTimeMs(),
+        t: this.tickTimeMs,
         tick: this.tick,
         phase: this.phase,
         left: Math.max(0, Math.round(this.phaseTimeLeft * 10) / 10),

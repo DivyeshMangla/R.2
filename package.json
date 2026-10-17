@@ -10,7 +10,8 @@
   "scripts": {
     "dev": "concurrently -k -n server,client -c cyan,magenta \"npm:dev -w server\" \"npm:dev -w client\"",
     "build": "npm run build -w client",
-    "typecheck": "tsc -p shared --noEmit && tsc -p server --noEmit && tsc -p client --noEmit"
+    "typecheck": "tsc -p shared --noEmit && tsc -p server --noEmit && tsc -p client --noEmit",
+    "test:aim": "npm run test:aim -w server"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",

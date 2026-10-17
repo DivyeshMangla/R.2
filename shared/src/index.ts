@@ -9,3 +9,5 @@ export * from './arenaPhysics';
 export * from './types';
 export * from './robotController';
 export * from './projectile';
+export * from './hitbox';
+export * from './aim';

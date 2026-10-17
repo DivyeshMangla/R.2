@@ -55,6 +55,33 @@ export interface PhysicsConfig {
   projectileDamage: number;
   fireInterval: number;
   twinSpread: number;
+  /** Swept-sphere radius of a shell against robot hitboxes (m). */
+  projectileRadius: number;
+  /** Shell drop (m/s²). 0 = straight flight; the aim solver ignores drop. */
+  projectileGravity: number;
+
+  // Aim & hit registration
+  aimPitchMinDeg: number;
+  aimPitchMaxDeg: number;
+  /** Aim distance used when the camera ray hits nothing (m). */
+  aimMaxRange: number;
+  /** Random cone half-angle per shot (deg), seeded so client and server agree. */
+  aimSpreadDeg: number;
+  /** A camera ray landing on the floor this close to an enemy retargets to that enemy (m). */
+  floorAimRadius: number;
+  /** Crosshair ray passing this close to an enemy aims at that enemy's depth (keeps lead, fixes parallax) (m). */
+  aimDepthRadius: number;
+  lagCompEnabled: number;
+  lagCompMaxMs: number;
+  /** Server fast-forwards the first part of each human shot by up to this many ms. */
+  hitscanAssistMs: number;
+  /** A shell cannot hit its own shooter for this long (s). */
+  selfHitGraceS: number;
+  aimAssistEnabled: number;
+  /** Extra hitbox padding for human shots, horizontal / vertical (m). */
+  aimAssistRadiusH: number;
+  aimAssistRadiusV: number;
+  aimAssistMaxRange: number;
 
   // Ramming
   ramMinSpeed: number;
@@ -127,6 +154,23 @@ export const DEFAULT_PHYSICS_CONFIG: Readonly<PhysicsConfig> = Object.freeze({
   projectileDamage: 17,
   fireInterval: 0.42,
   twinSpread: 0.07,
+  projectileRadius: 0.15,
+  projectileGravity: 0,
+
+  aimPitchMinDeg: -15,
+  aimPitchMaxDeg: 35,
+  aimMaxRange: 120,
+  aimSpreadDeg: 0,
+  floorAimRadius: 1.5,
+  aimDepthRadius: 8,
+  lagCompEnabled: 1,
+  lagCompMaxMs: 250,
+  hitscanAssistMs: 100,
+  selfHitGraceS: 0.1,
+  aimAssistEnabled: 1,
+  aimAssistRadiusH: 0.4,
+  aimAssistRadiusV: 0.6,
+  aimAssistMaxRange: 40,
 
   ramMinSpeed: 7,
   ramDamagePerMps: 2.6,
@@ -195,6 +239,22 @@ export const PHYSICS_CONFIG_RANGES: Readonly<Record<PhysicsConfigKey, readonly [
   projectileDamage: [1, 100, 1],
   fireInterval: [0.05, 2, 0.01],
   twinSpread: [0, 0.4, 0.005],
+  projectileRadius: [0, 0.6, 0.01],
+  projectileGravity: [0, 30, 0.1],
+  aimPitchMinDeg: [-45, 0, 1],
+  aimPitchMaxDeg: [0, 80, 1],
+  aimMaxRange: [20, 300, 1],
+  aimSpreadDeg: [0, 5, 0.05],
+  floorAimRadius: [0, 4, 0.05],
+  aimDepthRadius: [0, 20, 0.25],
+  lagCompEnabled: [0, 1, 1],
+  lagCompMaxMs: [0, 500, 5],
+  hitscanAssistMs: [0, 250, 5],
+  selfHitGraceS: [0, 0.5, 0.01],
+  aimAssistEnabled: [0, 1, 1],
+  aimAssistRadiusH: [0, 1.5, 0.01],
+  aimAssistRadiusV: [0, 1.5, 0.01],
+  aimAssistMaxRange: [0, 120, 1],
   ramMinSpeed: [0, 30, 0.5],
   ramDamagePerMps: [0, 20, 0.1],
   ramSelfDamageFraction: [0, 1, 0.01],

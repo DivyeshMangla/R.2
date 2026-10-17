@@ -1,5 +1,10 @@
 import {
+  aimAnglesFrom,
   angleDiff,
+  getTurretPivot,
+  makeAimSolution,
+  ROBOT_HITBOX_CENTER,
+  rotateVec,
   ARENA_HALF_SIZE,
   Buttons,
   clamp,
@@ -39,6 +44,7 @@ export class BotAI {
   private wanderTimer = 0;
   private reactionTimer = 0.4;
   private readonly skill = 0.65 + Math.random() * 0.3;
+  private readonly aim = makeAimSolution();
 
   think(self: ServerRobot, view: BotWorldView, dt: number): InputFrame {
     const pos = self.position();
@@ -153,15 +159,20 @@ export class BotAI {
       boost = false;
     }
 
-    // Aim with lead.
+    // Aim with lead at the hitbox centre, pitching from the real barrel hinge.
     let aimYaw = self.aimYaw;
+    let aimPitch = self.aimPitch;
     let fire = false;
     if (target) {
       const tp = target.position();
       const tv = target.velocity();
       const t = distToTarget / physicsConfig.projectileSpeed;
-      const lead = { x: tp.x + tv.x * t * this.skill, y: tp.y, z: tp.z + tv.z * t * this.skill };
-      aimYaw = Math.atan2(lead.x - pos.x, lead.z - pos.z) + this.aimNoise;
+      const c = rotateVec(target.controller.body.rotation(), ROBOT_HITBOX_CENTER);
+      const lead = { x: tp.x + c.x + tv.x * t * this.skill, y: tp.y + c.y + tv.y * t * this.skill, z: tp.z + c.z + tv.z * t * this.skill };
+      const pivot = getTurretPivot(pos, rot, { x: 0, y: 0, z: 0 });
+      const sol = aimAnglesFrom(pivot, lead, this.aim);
+      aimYaw = sol.yaw + this.aimNoise;
+      aimPitch = sol.pitch + this.aimNoise * 0.4;
       const eye = { x: pos.x, y: pos.y + 0.8, z: pos.z };
       const los = view.physics.lineOfSight(eye, { x: tp.x, y: tp.y + 0.5, z: tp.z });
       if (los && distToTarget < 36) {
@@ -176,7 +187,7 @@ export class BotAI {
     if (fire) buttons |= Buttons.FIRE;
     if (boost && throttle > 0) buttons |= Buttons.BOOST;
     if (wantAbility) buttons |= Buttons.ABILITY;
-    return { seq: 0, throttle, steer, aimYaw, buttons };
+    return { seq: 0, throttle, steer, aimYaw, buttons, aimPitch, viewT: 0 };
   }
 
   private findTarget(self: ServerRobot, view: BotWorldView, pos: Vec3): ServerRobot | null {

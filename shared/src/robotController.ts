@@ -15,7 +15,10 @@ export const WHEEL_ANCHORS: readonly Readonly<Vec3>[] = [
   { x: -0.98, y: -0.05, z: -0.78 },
 ];
 
-/** Turret pivot height above the chassis origin, and barrel length. */
+/**
+ * Visual turret mount height above the chassis origin, and barrel length.
+ * Shot origins come from shared/aim.ts (getMuzzlePosition), not from these.
+ */
 export const TURRET_HEIGHT = 0.62;
 export const BARREL_LENGTH = 1.55;
 export const TWIN_BARREL_OFFSET = 0.2;
@@ -261,27 +264,4 @@ export class RobotController {
     this.world.removeVehicleController(this.vehicle);
     this.world.removeRigidBody(this.body);
   }
-}
-
-/**
- * World-space muzzle positions + directions for the current turret aim.
- * Shots fire horizontally along the aim yaw from the turret's barrel tips.
- */
-export function muzzleTransforms(bodyPos: Vec3, bodyRot: Quat, aimYaw: number, count: number, spread: number): { p: Vec3; d: Vec3 }[] {
-  const pivotOffset = rotateVec(bodyRot, { x: 0, y: TURRET_HEIGHT, z: 0 });
-  const pivot = { x: bodyPos.x + pivotOffset.x, y: bodyPos.y + pivotOffset.y + 0.08, z: bodyPos.z + pivotOffset.z };
-  const fwd = { x: Math.sin(aimYaw), y: 0, z: Math.cos(aimYaw) };
-  const right = { x: -fwd.z, y: 0, z: fwd.x };
-  const out: { p: Vec3; d: Vec3 }[] = [];
-  for (let i = 0; i < count; i++) {
-    const t = count === 1 ? 0 : i / (count - 1) - 0.5;
-    const lateral = count === 1 ? 0 : t * 2 * TWIN_BARREL_OFFSET;
-    const yaw = aimYaw - t * spread * 2;
-    const d = { x: Math.sin(yaw), y: 0, z: Math.cos(yaw) };
-    out.push({
-      p: { x: pivot.x + fwd.x * BARREL_LENGTH + right.x * lateral, y: pivot.y, z: pivot.z + fwd.z * BARREL_LENGTH + right.z * lateral },
-      d,
-    });
-  }
-  return out;
 }

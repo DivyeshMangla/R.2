@@ -52,6 +52,7 @@ export class ServerRobot {
   lastInput: InputFrame = emptyInput();
   lastProcessedSeq = 0;
   aimYaw = 0;
+  aimPitch = 0;
 
   pendingOffers = 0;
   activeOffer: ActiveOffer | null = null;
@@ -132,6 +133,7 @@ export class ServerRobot {
       flipTimer: this.controller.sim.flipTimer,
       spawnCount: this.spawnCount,
       fireCooldown: this.fireCooldown,
+      aimPitch: this.aimPitch,
     };
   }
 

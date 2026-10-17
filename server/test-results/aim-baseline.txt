@@ -1,0 +1,17 @@
+BASELINE (pre-fix weapon path, best-case yaw aim, RTT 0, 60 shots each)
+
+flat 5 m                 hits   0/60    0.0%   (origin y 0.644 m above floor )
+flat 15 m                hits   0/60    0.0%   (origin y 0.644 m above floor )
+flat 30 m                hits   0/60    0.0%   (origin y 0.644 m above floor )
+platform -> floor        hits   0/60    0.0%   (origin y 0.692 m above floor )
+floor -> platform        hits   0/60    0.0%   (origin y 2.144 m above floor (platform top 1.5))
+mid-ramp -> floor        hits   0/60    0.0%   (origin y 0.644 m above floor )
+low profile (cover)      hits   0/60    0.0%   (origin y 0.644 m above floor )
+moving 21 m/s @ 15 m     hits   0/60    0.0%   (origin y 0.644 m above floor )
+
+Root causes (pre-fix):
+- Muzzle sat ~0.70 m above the chassis origin; the only robot collider was the chassis box (top at +0.30),
+  and shots flew perfectly horizontal (yaw-only aim), so every flat-ground shot passed over the target.
+- No pitch: shots could not go down from the platform or up onto it.
+- Crosshair = projection of a point 30 m along the flat barrel, not the camera centre ray.
+- No lag compensation; hitmarkers came from unconfirmed client prediction.
