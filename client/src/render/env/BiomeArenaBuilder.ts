@@ -29,7 +29,7 @@ class GeometryBatch {
     this.geometries.push(g);
   }
 
-  build(group: THREE.Group): void {
+  build(group: THREE.Group, ink: THREE.BufferGeometry[]): void {
     if (!this.geometries.length) return;
     const merged = mergeGeometries(this.geometries, false);
     for (const geometry of this.geometries) geometry.dispose();
@@ -39,6 +39,7 @@ class GeometryBatch {
     mesh.castShadow = this.shadow;
     mesh.receiveShadow = true;
     group.add(mesh);
+    if (this.name !== 'accents' && this.name !== 'ground') ink.push(new THREE.EdgesGeometry(merged, 28));
   }
 }
 
@@ -100,6 +101,13 @@ function terrainTexture(map: Readonly<MapDef>, anisotropy: number, stone = false
       const x = rng() * 256, y = rng() * 256;
       ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + rng() * 25, y + 10); ctx.lineTo(x + 20, y + 26); ctx.stroke();
     }
+  }
+  // Broken diagonal pen strokes sit over the painted terrain instead of glossy noise.
+  ctx.strokeStyle = 'rgba(34,28,25,0.15)'; ctx.lineWidth = 1.4;
+  for (let i = 0; i < 75; i++) {
+    const x = rng() * 256, y = rng() * 256, length = 5 + rng() * 14;
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + length, y - length * 0.6 + rng()); ctx.stroke();
+    if (i % 3 === 0) { ctx.beginPath(); ctx.moveTo(x + 1, y + 4); ctx.lineTo(x + length + 1, y - length * 0.6 + 4); ctx.stroke(); }
   }
   const texture = new THREE.CanvasTexture(c);
   texture.colorSpace = THREE.SRGBColorSpace; texture.wrapS = texture.wrapT = THREE.RepeatWrapping; texture.anisotropy = anisotropy;
@@ -189,96 +197,102 @@ function building(b: Batches, x: number, z: number, height: number, width: numbe
   }
 }
 
-/** Decorative scenery stays beyond the walls; driving lanes and spawn points remain clear. */
+/** Exterior placement is derived from the real arena boundary, independent of each prop's size. */
 function addLandscape(b: Batches, map: Readonly<MapDef>): THREE.Vector3[] {
   const rng = random(129 + map.id.length * 29), sparks: THREE.Vector3[] = [], p = map.palette;
-  b.dark.add(new THREE.CylinderGeometry(61, 53, 9, 8).rotateY(Math.PI / 8).translate(0, -5.5, 0), tone(p.stone, 0.62));
-  b.stone.add(new THREE.CylinderGeometry(61, 61.5, 2, 8).rotateY(Math.PI / 8).translate(0, -1.5, 0), tone(p.ground, 0.92));
-  for (let i = 0; i < 44; i++) {
-    const a = i / 44 * Math.PI * 2, radius = 50 + rng() * 9;
-    const x = Math.cos(a) * radius, z = Math.sin(a) * radius;
-    if (Math.max(Math.abs(x), Math.abs(z)) < ARENA_HALF_SIZE + 5) continue;
-    b.stone.add(new THREE.DodecahedronGeometry(1.4 + rng() * 2, 0).scale(1.3, 0.7 + rng(), 1).rotateY(a).translate(x, -0.25, z), tone(p.stone, 0.75 + rng() * 0.45));
+  const h = ARENA_HALF_SIZE, island = (h + 9) * Math.SQRT2;
+  const rim = (angle: number, margin: number): [number, number] => {
+    const x = Math.cos(angle), z = Math.sin(angle), distance = (h + margin) / Math.max(Math.abs(x), Math.abs(z));
+    return [x * distance, z * distance];
+  };
+  b.dark.add(new THREE.CylinderGeometry(island, island - 8, 12, 8).rotateY(Math.PI / 8).translate(0, -7, 0), tone(p.stone, 0.62));
+  b.stone.add(new THREE.CylinderGeometry(island, island + 0.5, 2, 8).rotateY(Math.PI / 8).translate(0, -1.5, 0), tone(p.ground, 0.92));
+  const sceneryCount = Math.ceil(h * 1.7);
+  for (let i = 0; i < sceneryCount; i++) {
+    const a = i / sceneryCount * Math.PI * 2, [x, z] = rim(a, 7 + rng() * 11);
+    b.stone.add(new THREE.DodecahedronGeometry(1.3 + rng() * 2, 0).scale(1.3, 0.7 + rng(), 1).rotateY(a).translate(x, -0.25, z), tone(p.stone, 0.75 + rng() * 0.45));
   }
   switch (map.biome) {
     case 'forest':
-      for (let i = 0; i < 90; i++) {
-        const a = rng() * Math.PI * 2, r = 47 + rng() * 27;
-        const x = Math.cos(a) * r, z = Math.sin(a) * r;
-        if (Math.max(Math.abs(x), Math.abs(z)) < 45) continue;
+      for (let i = 0; i < sceneryCount; i++) {
+        const [x, z] = rim(rng() * Math.PI * 2, 10 + rng() * 24);
         tree(b, x, z, 0.8 + rng() * 0.8, map, i + 7);
       }
-      for (const [x, z] of [[-48, -45], [48, 45], [-48, 43], [48, -43]]) {
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+        const x = sx * (h + 9), z = sz * (h + 7);
         b.dark.add(box(5.8, 0.8, 0.85, x, 0.5, z, 0.5), 0x755b3b);
         for (let i = 0; i < 6; i++) b.detail.add(new THREE.DodecahedronGeometry(0.5, 0).translate(x + rng() * 3, 0.5, z + rng() * 3), i % 2 ? 0xf5ce65 : 0xe9b7ce);
       }
       break;
     case 'desert':
-      for (const [x, z, h, r] of [[-57, 0, 16, 10], [55, -19, 19, 9], [-53, 32, 12, 8], [33, 56, 15, 10]]) mesa(b, x, z, h, r, map);
-      for (let i = 0; i < 7; i++) b.stone.add(box(24 - i * 2.8, 1.5, 24 - i * 2.8, 0, i * 1.45 + 0.7, -61), tone(p.stone, 0.85 + i * 0.04));
-      arch(b, 0, -48, 6.5, 0, map);
-      for (let i = 0; i < 25; i++) {
-        const x = (i % 2 ? -1 : 1) * (45 + rng() * 8), z = (rng() - 0.5) * 76, h = 1.8 + rng() * 1.8;
-        b.foliage.add(new THREE.CylinderGeometry(0.28, 0.34, h, 6).translate(x, h / 2, z), p.foliage);
-        b.foliage.add(new THREE.CylinderGeometry(0.18, 0.18, 1.2, 6).rotateZ(Math.PI / 2).translate(x + 0.45, h * 0.5, z), p.foliage);
-        b.foliage.add(new THREE.CylinderGeometry(0.18, 0.2, 0.9, 6).translate(x + 0.95, h * 0.5 + 0.35, z), p.foliage);
+      for (let i = 0; i < 14; i++) {
+        const [x, z] = rim(i / 14 * Math.PI * 2, 18 + rng() * 18);
+        mesa(b, x, z, 9 + rng() * 15, 7 + rng() * 5, map);
+      }
+      for (let i = 0; i < 7; i++) b.stone.add(box(24 - i * 2.8, 1.5, 24 - i * 2.8, 0, i * 1.45 + 0.7, -h - 26), tone(p.stone, 0.85 + i * 0.04));
+      arch(b, 0, -h - 10, 6.5, 0, map);
+      for (let i = 0; i < sceneryCount / 2; i++) {
+        const [x, z] = rim(rng() * Math.PI * 2, 7 + rng() * 12), height = 1.8 + rng() * 1.8;
+        b.foliage.add(new THREE.CylinderGeometry(0.28, 0.34, height, 6).translate(x, height / 2, z), p.foliage);
+        b.foliage.add(new THREE.CylinderGeometry(0.18, 0.18, 1.2, 6).rotateZ(Math.PI / 2).translate(x + 0.45, height * 0.5, z), p.foliage);
+        b.foliage.add(new THREE.CylinderGeometry(0.18, 0.2, 0.9, 6).translate(x + 0.95, height * 0.5 + 0.35, z), p.foliage);
       }
       break;
     case 'arctic':
-      for (let i = 0; i < 15; i++) {
-        const a = i / 15 * Math.PI * 2, r = 64 + rng() * 14;
-        mountain(b, Math.cos(a) * r, Math.sin(a) * r, 15 + rng() * 16, 9 + rng() * 7, true, map);
+      for (let i = 0; i < 24; i++) {
+        const [x, z] = rim(i / 24 * Math.PI * 2, 28 + rng() * 14);
+        mountain(b, x, z, 15 + rng() * 20, 9 + rng() * 7, true, map);
       }
-      for (let i = 0; i < 34; i++) {
-        const a = rng() * Math.PI * 2, r = 49 + rng() * 16;
-        const x = Math.cos(a) * r, z = Math.sin(a) * r;
-        if (Math.max(Math.abs(x), Math.abs(z)) < 46) continue;
+      for (let i = 0; i < sceneryCount; i++) {
+        const [x, z] = rim(rng() * Math.PI * 2, 10 + rng() * 15);
         tree(b, x, z, 0.7 + rng() * 0.7, map, i);
-        if (i % 3 === 0) crystal(b, x - 2, 0, z - 1, 1.4, p.accent);
+        if (i % 4 === 0) crystal(b, x - 2, 0, z - 1, 1.4, p.accent);
       }
       break;
     case 'ancient':
-      for (const [x, z, yaw] of [[-49, -25, Math.PI / 2], [49, 25, Math.PI / 2], [23, -49, 0], [-23, 49, 0]]) arch(b, x, z, 8.5, yaw, map, x < 0);
-      for (const [x, z] of [[-49, 48], [49, -48]]) {
+      for (const side of [-1, 1]) for (const along of [-h * 0.65, 0, h * 0.65]) {
+        arch(b, side * (h + 10), along, 8.5, Math.PI / 2, map, side < 0 && along !== 0);
+        arch(b, along, side * (h + 10), 8.5, 0, map, side > 0 && along !== 0);
+      }
+      for (const side of [-1, 1]) {
+        const x = side * (h + 11), z = -side * (h + 11);
         for (let i = 0; i < 3; i++) b.stone.add(box(15 - i * 3, 1.4, 15 - i * 3, x, i * 1.4 + 0.7, z), tone(p.stone, 0.9 + i * 0.1));
         b.stone.add(new THREE.CylinderGeometry(0.9, 2.2, 12, 4).rotateZ(0.07).translate(x, 9, z), p.stone);
-        b.glow.add(new THREE.OctahedronGeometry(1.1, 0).translate(x - 0.7, 15, z), tone(p.accent, 1.7));
+        b.glow.add(new THREE.OctahedronGeometry(1.1, 0).translate(x - 0.7, 15, z), tone(p.accent, 1.1));
       }
-      for (let i = 0; i < 40; i++) {
-        const a = rng() * Math.PI * 2, r = 48 + rng() * 13;
-        const x = Math.cos(a) * r, z = Math.sin(a) * r;
-        if (Math.max(Math.abs(x), Math.abs(z)) < 45) continue;
+      for (let i = 0; i < sceneryCount; i++) {
+        const [x, z] = rim(rng() * Math.PI * 2, 8 + rng() * 12);
         b.foliage.add(new THREE.DodecahedronGeometry(1.4, 0).scale(1.6, 0.5, 1).translate(x, 0.5, z), p.foliage);
         if (i % 4 === 0) b.detail.add(new THREE.CylinderGeometry(0.5, 0.55, 4, 8).rotateZ(1.1).translate(x, 0.5, z), tone(p.stone, 1.2));
       }
       break;
     case 'volcanic':
       for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
-        const x = sx * 46, z = sz * 46;
+        const x = sx * (h + 8), z = sz * (h + 8);
         b.stone.add(box(8, 11, 8, x, 5.2, z), p.stone);
         b.detail.add(box(9.2, 0.8, 9.2, x, 10.7, z), tone(p.stone, 1.35));
         for (const dx of [-3.6, 0, 3.6]) for (const dz of [-3.6, 3.6]) b.stone.add(box(1.3, 1.4, 1.3, x + dx, 11.6, z + dz), p.stone);
         const flame = new THREE.Vector3(x - sx * 3, 6.5, z - sz * 3);
-        b.glow.add(new THREE.OctahedronGeometry(0.7, 0).scale(0.6, 1.8, 0.6).translate(flame.x, flame.y, flame.z), tone(p.accent, 2.5));
+        b.glow.add(new THREE.OctahedronGeometry(0.7, 0).scale(0.6, 1.8, 0.6).translate(flame.x, flame.y, flame.z), tone(p.accent, 1.8));
         sparks.push(flame);
       }
-      mountain(b, -69, -65, 31, 21, false, map);
-      b.glow.add(new THREE.TorusGeometry(3.1, 0.65, 5, 18).rotateX(Math.PI / 2).translate(-69, 25.8, -65), tone(p.accent, 3));
-      for (let i = 0; i < 12; i++) {
-        const a = rng() * Math.PI * 2, r = 65 + rng() * 12;
-        mountain(b, Math.cos(a) * r, Math.sin(a) * r, 7 + rng() * 13, 5 + rng() * 6, false, map);
+      mountain(b, -h - 32, -h - 30, 34, 22, false, map);
+      b.glow.add(new THREE.TorusGeometry(3.1, 0.65, 5, 18).rotateX(Math.PI / 2).translate(-h - 32, 28, -h - 30), tone(p.accent, 2));
+      for (let i = 0; i < 22; i++) {
+        const [x, z] = rim(i / 22 * Math.PI * 2, 24 + rng() * 14);
+        mountain(b, x, z, 7 + rng() * 16, 5 + rng() * 8, false, map);
       }
       break;
     case 'urban':
       for (let side = 0; side < 4; side++) {
         const a = side * Math.PI / 2;
-        for (const along of [-29, -15, 17, 31]) {
-          const x = Math.sin(a) * 50 + Math.cos(a) * along, z = Math.cos(a) * 50 - Math.sin(a) * along;
-          building(b, x, z, 9 + rng() * 15, 6 + rng() * 2, a, map);
+        for (let along = -h + 10; along <= h - 10; along += 14) {
+          const x = Math.sin(a) * (h + 10) + Math.cos(a) * along, z = Math.cos(a) * (h + 10) - Math.sin(a) * along;
+          building(b, x, z, 9 + rng() * 18, 6 + rng() * 2, a, map);
         }
       }
       for (const side of [-1, 1]) {
-        const x = side * 59, z = -12;
+        const x = side * (h + 20), z = -h * 0.3;
         b.detail.add(box(0.9, 19, 1.1, x, 9.5, z), 0xe6b45f);
         b.detail.add(box(12, 0.7, 0.9, x - side * 3, 18, z), 0xe6b45f);
         b.dark.add(box(0.08, 7, 0.08, x - side * 8, 14, z), 0x435c6d);
@@ -300,7 +314,7 @@ function surroundingSurface(map: Readonly<MapDef>): THREE.Mesh<THREE.CircleGeome
       #include <colorspace_fragment>
       }`,
   });
-  const mesh = new THREE.Mesh(new THREE.CircleGeometry(150, 64).rotateX(-Math.PI / 2), material);
+  const mesh = new THREE.Mesh(new THREE.CircleGeometry(ARENA_HALF_SIZE * 3 + 60, 64).rotateX(-Math.PI / 2), material);
   mesh.position.y = -6;
   mesh.name = lava ? 'biome.lava' : water ? 'biome.water' : 'biome.outerTerrain';
   return mesh;
@@ -309,22 +323,40 @@ function surroundingSurface(map: Readonly<MapDef>): THREE.Mesh<THREE.CircleGeome
 export function buildBiomeArena(anisotropy: number, mapId: MapId = 'foundry'): ArenaVisuals {
   const map = getMap(mapId), definition = getArenaDefinition(mapId), group = new THREE.Group();
   group.name = `Arena:${map.id}:${map.biome}`;
-  const base = { vertexColors: true, flatShading: true, roughness: 0.92, metalness: 0.02 };
+  const base = { vertexColors: true, flatShading: true, roughness: 1, metalness: 0 };
   const batches: Batches = {
     ground: new GeometryBatch('ground', new THREE.MeshStandardMaterial({ ...base, map: terrainTexture(map, anisotropy) }), false),
-    stone: new GeometryBatch('stone', new THREE.MeshStandardMaterial({ ...base, map: terrainTexture(map, anisotropy, true), roughness: map.biome === 'arctic' ? 0.38 : 0.85 })),
+    stone: new GeometryBatch('stone', new THREE.MeshStandardMaterial({ ...base, map: terrainTexture(map, anisotropy, true) })),
     dark: new GeometryBatch('structure', new THREE.MeshStandardMaterial(base)),
     foliage: new GeometryBatch('foliage', new THREE.MeshStandardMaterial({ ...base, roughness: 1 })),
-    detail: new GeometryBatch('details', new THREE.MeshStandardMaterial({ ...base, roughness: map.biome === 'arctic' ? 0.25 : 0.7, metalness: map.biome === 'urban' ? 0.35 : 0.05 })),
+    detail: new GeometryBatch('details', new THREE.MeshStandardMaterial(base)),
     glow: new GeometryBatch('accents', new THREE.MeshBasicMaterial({ vertexColors: true }), false),
   };
+  for (const batch of Object.values(batches)) {
+    if (batch.material instanceof THREE.MeshStandardMaterial) batch.material.onBeforeCompile = (shader) => {
+      shader.fragmentShader = shader.fragmentShader.replace('#include <opaque_fragment>', `
+        outgoingLight = floor(max(outgoingLight, vec3(0.0)) * 7.0 + 0.5) / 7.0;
+        #include <opaque_fragment>`);
+    };
+  }
   for (const block of definition.blocks) addGameplay(batches, block, map);
   const sparkPoints = addLandscape(batches, map);
-  if (map.biome === 'urban') for (const side of [-1, 1]) for (let d = -34; d < 35; d += 5) {
+  if (map.biome === 'urban') for (const side of [-1, 1]) for (let d = -ARENA_HALF_SIZE + 6; d < ARENA_HALF_SIZE - 5; d += 5) {
     batches.detail.add(box(0.1, 0.012, 1.6, side * 3.1, 0.012, d), tone(map.palette.accent, 0.8));
     batches.detail.add(box(1.6, 0.012, 0.1, d, 0.012, side * 3.1), tone(map.palette.accent, 0.8));
   }
-  for (const batch of Object.values(batches)) batch.build(group);
+  const ink: THREE.BufferGeometry[] = [];
+  for (const batch of Object.values(batches)) batch.build(group, ink);
+  const edges = mergeGeometries(ink, false);
+  for (const geometry of ink) geometry.dispose();
+  if (edges) {
+    const outlines = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0x302b29, transparent: true, opacity: 0.8, depthWrite: false }));
+    outlines.name = 'biome.ink';
+    outlines.renderOrder = 1;
+    group.add(outlines);
+  }
+  group.userData.colliderCount = definition.blocks.length;
+  group.userData.arenaHalfSize = ARENA_HALF_SIZE;
   const surround = surroundingSurface(map); group.add(surround);
   const scoreboard = new ScoreboardScreen(13, 5, mapId); group.add(scoreboard.mesh);
   return { group, scoreboard, sparkPoints, update(time: number, dt: number) { void dt; surround.material.uniforms.uTime.value = time; scoreboard.update(time); } };

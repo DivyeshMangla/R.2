@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { getMap, type MapId } from '@robot-arena/shared';
+import { ARENA_HALF_SIZE, getMap, type MapId } from '@robot-arena/shared';
 import {
   BloomEffect,
   BlendFunction,
@@ -147,7 +147,7 @@ export class Renderer {
     this.renderer.info.autoReset = false;
     container.appendChild(this.renderer.domElement);
 
-    this.camera = new THREE.PerspectiveCamera(70, container.clientWidth / container.clientHeight, 0.1, 400);
+    this.camera = new THREE.PerspectiveCamera(70, container.clientWidth / container.clientHeight, 0.1, Math.max(400, ARENA_HALF_SIZE * 7));
     this.camera.position.set(0, 12, -20);
 
     this.scene.background = new THREE.Color(0x060a12);
@@ -225,15 +225,15 @@ export class Renderer {
     this.tuning.rimIntensity = volcanic ? 0.75 : 0.65;
     this.tuning.hemiIntensity = volcanic ? 1.1 : arctic ? 1.85 : 1.5;
     this.tuning.envIntensity = volcanic ? 0.65 : 0.85;
-    this.tuning.fogDensity = volcanic ? 0.006 : map.biome === 'forest' ? 0.0045 : 0.003;
+    this.tuning.fogDensity = volcanic ? 0.002 : map.biome === 'forest' ? 0.0016 : 0.0012;
     this.tuning.fogFalloff = 0.11;
-    this.tuning.bloomIntensity = volcanic ? 0.65 : 0.3;
+    this.tuning.bloomIntensity = volcanic ? 0.18 : 0.05;
     this.tuning.bloomThreshold = 1.2;
     this.tuning.vignetteDarkness = 0.16;
     this.tuning.gradeShadowTint = 0.15;
     this.tuning.gradeHighlightTint = desert ? 0.35 : 0.1;
-    this.tuning.gradeSaturation = 1.12;
-    this.tuning.gradeContrast = 0.08;
+    this.tuning.gradeSaturation = 1.04;
+    this.tuning.gradeContrast = 0.16;
     this.tuning.grainOpacity = 0;
     this.applyTuning();
     this.applyGrading();
@@ -241,7 +241,7 @@ export class Renderer {
   }
 
   private createSky(): THREE.Mesh {
-    const geo = new THREE.SphereGeometry(300, 48, 24);
+    const geo = new THREE.SphereGeometry(Math.max(300, ARENA_HALF_SIZE * 6), 32, 16);
     const mat = new THREE.ShaderMaterial({
       side: THREE.BackSide,
       depthWrite: false,

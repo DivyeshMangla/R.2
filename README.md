@@ -14,9 +14,13 @@ npm run dev
 - Game client (Vite): http://localhost:5173
 - Game server (Colyseus WebSocket): ws://localhost:2567. Override the port with the `ARENA_PORT` environment variable.
 
-Open http://localhost:5173 to enter the illustrated World Atlas lobby. Choose a character, map, starter weapon, and callsign, then deploy. Players selecting the same map join the same available room; different maps have separate matches. Bots fill the remaining seats up to 6. You can add `?name=YourName` to the URL to prefill your callsign.
+Open http://localhost:5173 to enter the comic garage. Choose a character, arena, and callsign, then press Play. The left navigation opens the robot roster, six arena sketches, and field guide. Players selecting the same map join the same available room; different maps have separate matches. Bots fill the remaining seats up to 6. You can add `?name=YourName` to the URL to prefill your callsign.
 
-Characters have distinct chassis attachments: Striker's racing fins, Bulwark's armor and shield, and Spectre's sensors. Their default loadouts are Pulse, Scatter, and Rail respectively; any starter weapon can be selected in the lobby. The atlas has six playable realms: **Ember Citadel** (volcanic fortress), **Neon Harbor** (futuristic city), **Mosswild Grove** (forest ridge), **Saffron Dunes** (sandstone canyons), **Frostline Basin** (glacier shelves), and **Sunken Relic** (ancient temple ruins). Each has its own collider layout, scenery, ground materials, lighting, sky, and fog. Robots automatically gain matching paint, accents, and biome fittings while keeping their selected character silhouette and weapon. The lobby, HUD, upgrade cards, scoreboards, and settings use a new parchment expedition theme. Each map has six labeled weapon pads: drive nearby and press **E** to equip a different weapon. Pads restock after 12 seconds, and respawning restores your selected starter weapon. Weapon roles are balanced Pulse Cannon, close-range Scatter Cannon, precision Rail Cannon, and rapid-fire Arc Repeater.
+Characters have distinct silhouettes: Striker's racing fins, Bulwark's armor and shield, and Spectre's sensors. Robots use ink outlines, matte cel paint, hatch details, and biome fittings matching the selected arena. The lobby uses a hand-authored vector hangar and sketch illustrations; arena previews are generated from the actual obstacle layouts. The six arenas are **Ember Citadel** (volcanic fortress), **Neon Harbor** (freight city), **Mosswild Grove** (forest ridge), **Saffron Dunes** (sandstone canyons), **Frostline Basin** (glacier shelves), and **Sunken Relic** (ancient temple ruins).
+
+Every arena is **200 × 200 m**, with 63–77 collidable objects, ramps, connected routes, and **18 weapon pads**. Eight widely separated spawn zones each have a weapon 10 m away. Both players and bots start and respawn **unarmed**, with six seconds of spawn protection. Drive over a pad to equip your first weapon automatically; once armed, press **E** at another pad to swap. Pads restock after 12 seconds. Weapon roles are balanced Pulse Cannon, close-range Scatter Cannon, precision Rail Cannon, and rapid-fire Arc Repeater.
+
+Bots patrol and look for weapons before fighting. They ignore unarmed or spawn-protected players, require 1.3 seconds of clear sight within 22 m to acquire a target, and pause at least 1.2 seconds between shots. They use less accurate aim, avoid ramming nearby players, and do not boost or use abilities.
 
 Other scripts:
 
@@ -26,10 +30,12 @@ npm run build       # production client build (client/dist)
 npm run test:aim    # headless aim / hit-registration harness (writes server/test-results/aim-after.txt)
 npm run test:driving # headless speed, braking, steering, boost and landing checks
 npm run test:lobby  # all six maps: geometry, spawn/pad clearance, ramps, loadouts, pickups
+npm run test:bots   # unarmed/protected targets, sight, acquisition, firing pace and patrol
+npm run test:maps   # physical starter drives, ramps, turn clearance and connected routes
 npm run test:network # multiplayer map matching checks (requires the server running)
 ```
 
-The original generated world-atlas illustration is saved at `client/public/assets/atlas/world-atlas.png`; its full generation prompt and provenance are in `client/public/assets/atlas/README.md`. Map pins are HTML controls rather than baked text, so every realm supports pointer and keyboard selection.
+The garage background is `client/public/assets/garage/garage-sketch.svg`. Robot and map illustrations live in `client/src/ui/SketchArt.ts`; selection controls support pointer and keyboard input. The earlier generated world-atlas image remains in `client/public/assets/atlas/` with its provenance, but is no longer used by the lobby.
 
 ## Controls
 
@@ -40,7 +46,7 @@ The original generated world-atlas illustration is saved at `client/public/asset
 | Left click | Fire the cannon |
 | Shift | Boost (uses the energy meter) |
 | Space | Use active abilities (Rocket Dash, EMP Burst) |
-| E | Equip the weapon on a nearby available pad |
+| E | Swap weapons at a nearby available pad (first pickup is automatic) |
 | 1 / 2 / 3, or click a card | Pick a level-up card |
 | Tab | Full scoreboard |
 | ` or F2 | lil-gui tuning panel |
@@ -78,18 +84,18 @@ client/   Game (fixed-step accumulator loop, rendering decoupled)
 
 ## Known limitations
 
-- **Headless verification only:** this container has no GPU. Shader compilation, draw calls and rendering were verified in headless Chromium (SwiftShader), where the game runs at about 1 FPS. Frame times and visual feel on real hardware still need a person at a real display.
+- **Rendering verification:** the current six-map geometry, bounds, outlines, and unarmed mesh transitions pass runtime checks. Browser visual checks for the latest garage were unavailable because Computer Use permission was denied. The older Iteration 2 performance measurements below are historical, not measurements of the expanded arenas; frame times and visual feel need checking on real hardware.
 - **Debris is client-side only:** debris runs in a separate client-only Rapier world, so each client sees different chunk trajectories. At most 20 chunks are live at once (about two fresh wrecks); older chunks are removed early to keep draw calls bounded.
 - **Tuning is unauthenticated:** any connected client can change the server's physics through lil-gui. It is a dev tool and must be gated before any public deployment.
 - **Shadows:** three r186 removed `PCFSoftShadowMap`. Shadows use `PCFShadowMap`, with softness controlled by `shadow.radius`. Only the key light casts shadows.
 - **Bloom:** "selective" bloom works through an HDR luminance threshold (about 0.95 before tone mapping), so only emissives and VFX bloom.
 - **Colyseus 0.18 timing:** the room measures wall-clock time with `performance.now()`, because the `deltaTime` Colyseus passes in was unreliable.
 - **Add-on parts:** Rapid Loader, Overclocked Motor and Ricochet Rounds have no visible add-on part.
-- **Bots:** bots use whisker raycasts for avoidance and have no navmesh. They can get briefly stuck on the jump ramps. Since the aim fix they also aim with pitch, which makes them much more accurate than before.
-- **Rooms and reconnects:** there is one room per server process, and a dropped player cannot reconnect.
+- **Bots:** bots use whisker raycasts for avoidance and have no navmesh. Complex obstacles can still require a patrol retry; calm targeting and firing cadence have dedicated tests.
+- **Rooms and reconnects:** matches are grouped by selected map. A dropped player must reload the garage to rejoin.
 - **Bundle size:** the client bundle is large because the Rapier WASM is inlined. Code splitting is not set up.
 
-## Iteration 2 — graphics, VFX and game feel
+## Iteration 2 — graphics, VFX and game feel (historical baseline)
 
 Constraints for this iteration:
 - no external assets (every texture, sprite and LUT is procedural)

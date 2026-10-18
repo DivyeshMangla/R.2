@@ -14,6 +14,8 @@
     "test:aim": "npm run test:aim -w server",
     "test:driving": "npm run test:driving -w server",
     "test:lobby": "npm run test:lobby -w server",
+    "test:bots": "npm run test:bots -w server",
+    "test:maps": "npm run test:maps -w server",
     "test:network": "npm run test:network -w server"
   },
   "devDependencies": {

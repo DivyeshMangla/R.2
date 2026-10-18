@@ -1,85 +1,94 @@
-import { CHARACTERS, WEAPONS, MAPS, getCharacter, getWeapon, getMap, type CharacterId, type MapId, type WeaponId, type LobbySelection, type MapBiome } from '@robot-arena/shared';
+import { CHARACTERS, MAPS, getCharacter, getMap, getArenaDefinition, type CharacterId, type LobbySelection, type MapId } from '@robot-arena/shared';
+import { hex, mapSketch, robotSketch, sketchIcon } from './SketchArt';
 import './lobby.css';
 
 const KEY = 'robot-arena.lobby.v1';
-const ATLAS = '/assets/atlas/world-atlas.png';
-const BIOME_ICONS: Record<MapBiome, string> = { volcanic: '♜', urban: '⌘', forest: '♧', desert: '☀', arctic: '❄', ancient: '◈' };
+type Panel = 'maps' | 'robots' | 'guide';
 
-/** An illustrated world atlas; entering a realm is an explicit multiplayer join. */
+/** Comic workshop lobby. Every visible navigation item opens a working panel. */
 export class Lobby {
   onDeploy: ((selection: LobbySelection) => void) | null = null;
   private readonly root = document.createElement('main');
+  private readonly shell: HTMLElement;
   private readonly name: HTMLInputElement;
   private readonly deploy: HTMLButtonElement;
   private readonly status: HTMLElement;
   private readonly preview: HTMLElement;
+  private readonly mapPreview: HTMLElement;
+  private readonly drawers: Map<Panel, HTMLElement> = new Map();
   private characterId: CharacterId = 'striker';
   private mapId: MapId = 'foundry';
-  private weaponId: WeaponId = 'pulse';
   private busy = false;
   private reconnect = false;
+  private activePanel: Panel | null = null;
+  private returnFocus: HTMLElement | null = null;
 
   constructor() {
     let saved: Partial<LobbySelection> = {};
-    try { saved = JSON.parse(localStorage.getItem(KEY) ?? '{}') as Partial<LobbySelection>; } catch { /* Defaults also work with storage disabled. */ }
+    try { saved = JSON.parse(localStorage.getItem(KEY) ?? '{}') as Partial<LobbySelection>; } catch { /* Storage is optional. */ }
     this.characterId = getCharacter(saved?.characterId).id;
     this.mapId = getMap(saved?.mapId).id;
-    this.weaponId = getWeapon(saved?.weaponId ?? getCharacter(this.characterId).starterWeapon).id;
-    this.root.className = 'garage atlas-lobby';
+    this.root.className = 'garage comic-garage';
     this.root.innerHTML = `
-      <header class="atlas-header">
-        <a class="atlas-brand" href="/" aria-label="Robot Expeditions home"><span class="atlas-brand-symbol">✣</span><span>ROBOT<span class="brand-serif">expeditions</span></span></a>
-        <span class="atlas-header-title">THE WORLD ATLAS</span>
-        <div class="atlas-edition"><i></i> SIX REALMS. ENDLESS RIVALRIES.<span>VOL. 01 / THE FRACTURED ISLES</span></div>
-      </header>
-      <div class="atlas-intro"><div><p class="atlas-kicker">A WORLD WORTH FIGHTING FOR</p><h1>Choose a realm.<br><em>Leave your mark.</em></h1></div><p>From frozen strongholds to forgotten forests.<br>A different battlefield. A machine made to belong.</p><div class="atlas-intro-mark">06<span>EXPLORE THE REALMS</span></div></div>
-      <div class="atlas-layout">
-        <section class="atlas-world" aria-label="World map selection">
-          <div class="world-frame">
-            <img class="world-illustration" src="${ATLAS}" width="1536" height="1024" alt="An illustrated island with a volcanic citadel, icy mountains, forest, desert, ancient ruins, and a futuristic harbor" fetchpriority="high">
-            <div class="world-topline"><span>THE FRACTURED ISLES</span><span>SELECT YOUR BATTLEFIELD</span></div>
-            <svg class="atlas-routes" viewBox="0 0 100 66.667" preserveAspectRatio="none" aria-hidden="true"><path d="M30 14.7Q48 5 74 13.3T68 28Q49 31 27 29.3T31 45.3Q53 55 76 46"/></svg>
-            ${MAPS.map((m, i) => `<button type="button" class="atlas-pin pin-${m.biome}" data-map="${m.id}" aria-label="Select ${m.name}" style="left:${m.atlas.x}%;top:${m.atlas.y}%;--pin-color:#${m.palette.accent.toString(16).padStart(6, '0')}"><span class="pin-symbol">${BIOME_ICONS[m.biome]}</span><span class="pin-label"><small>${String(i + 1).padStart(2, '0')}</small>${m.name}</span></button>`).join('')}
-            <div class="atlas-compass" aria-hidden="true"><span>N</span>✥</div>
-            <div class="world-footline"><span>⌖ <strong class="world-current-name"></strong></span><span>6 COMBATANTS / WEAPON PICKUPS</span></div>
-          </div>
-          <div class="realm-section-label"><span>EXPLORE THE REALMS</span><span>ALL SIX BATTLEFIELDS ARE PLAYABLE <i>↘</i></span></div>
-          <div class="realm-index">${MAPS.map((m, i) => `<button type="button" class="realm-card" data-map="${m.id}" style="--realm-color:#${m.palette.accent.toString(16).padStart(6, '0')}"><span class="realm-number">${String(i + 1).padStart(2, '0')}</span><span class="realm-card-icon">${BIOME_ICONS[m.biome]}</span><span><strong>${m.name}</strong><small>${m.biome} / ${m.difficulty}</small></span><span class="realm-card-arrow">↗</span></button>`).join('')}</div>
-          <div class="atlas-field-note"><span>FIELD NOTE / 001</span><p>Every realm has its own terrain, atmosphere, and machine finish.<br>Find weapon shrines in the field. Press <kbd>E</kbd> to claim a new role.</p><span class="field-note-symbol">✧</span></div>
-        </section>
-        <aside class="expedition-sheet" aria-label="Character and loadout selection">
-          <div class="sheet-heading"><span>YOUR NEXT EXPEDITION</span><span class="sheet-seal">✣</span></div>
-          <div class="realm-heading"><span class="selected-biome"></span><h2 class="selected-realm-name"></h2><p class="selected-realm-description"></p></div>
-          <div class="expedition-machine"><div class="machine-ground"></div><div class="machine-preview"></div><div class="machine-caption"><span class="machine-model"></span><span class="machine-finish"></span></div></div>
-          <div class="sheet-section machine-section"><div class="sheet-section-title"><h3><span>01</span> YOUR MACHINE</h3><span>3 CLASSES</span></div><div class="atlas-character-options">${CHARACTERS.map((c) => `<button type="button" class="atlas-character" data-character="${c.id}"><span>${c.id === 'striker' ? '➤' : c.id === 'bulwark' ? '⛨' : '⌖'}</span><strong>${c.name}</strong><small>${c.role}</small></button>`).join('')}</div><p class="selected-character-description"></p></div>
-          <div class="sheet-section gear-section"><div class="sheet-section-title"><h3><span>02</span> STARTER WEAPON</h3><span>SWAP IN THE FIELD</span></div><div class="atlas-weapon-options">${WEAPONS.map((w) => `<button type="button" class="atlas-weapon" data-weapon="${w.id}"><span>${({ pulse: '◈', scatter: '⋮', rail: '⟶', repeater: '»' })[w.id]}</span><span><strong>${w.name}</strong><small>${w.role}</small></span></button>`).join('')}</div><p class="selected-weapon-description"></p></div>
-          <label class="atlas-callsign"><span><b>03</b> YOUR CALLSIGN</span><input aria-label="Your callsign" placeholder="What should we call you?" maxlength="16" autocomplete="nickname"></label>
-          <div class="expedition-deploy"><button type="button" class="deploy-button">ENTER THE REALM <span>↗</span></button><p class="atlas-status" role="status" aria-live="polite">Your expedition begins when you're ready.</p></div>
-        </aside>
+      <div class="garage-shell">
+        <header class="workshop-header">
+          <label class="pilot-plate"><span class="pilot-avatar">${sketchIcon('robots')}</span><span class="pilot-name"><small>YOUR CALLSIGN</small><input aria-label="Your callsign" maxlength="16" placeholder="ROOKIE" autocomplete="nickname"></span><span class="pilot-stripe">01</span></label>
+          <div class="match-facts"><span><i>✦</i><b>6</b><small>PILOT BRAWL</small></span><span><i>⌖</i><b class="arena-size">200 × 200</b><small>METERS OF MAYHEM</small></span><span class="unarmed-fact"><i>∅</i><b>UNARMED</b><small>FIND YOUR FIRST WEAPON</small></span></div>
+          <button type="button" class="garage-help" data-open="guide" aria-label="Open controls and how to play">${sketchIcon('guide')}<span>HOW TO PLAY</span></button>
+        </header>
+        <div class="workshop-stage">
+          <nav class="workshop-nav" aria-label="Garage navigation">
+            <button type="button" class="workshop-tab" data-home aria-pressed="true">${sketchIcon('garage')}<span>GARAGE</span></button>
+            <button type="button" class="workshop-tab" data-open="robots" aria-pressed="false">${sketchIcon('robots')}<span>ROBOTS</span><b>3</b></button>
+            <button type="button" class="workshop-tab" data-open="maps" aria-pressed="false">${sketchIcon('maps')}<span>ARENAS</span><b>6</b></button>
+            <button type="button" class="workshop-tab" data-open="guide" aria-pressed="false">${sketchIcon('guide')}<span>FIELD GUIDE</span></button>
+          </nav>
+          <aside class="workshop-notes"><span class="note-pin"></span><p>MECHANIC'S NOTES</p><h2>LOOT UP.<br>THEN LET RIP.</h2><ol><li><b>01</b> Everybody starts unarmed.</li><li><b>02</b> Drive over your first gun.</li><li><b>03</b> Press <kbd>E</kbd> to swap later.</li></ol><div class="note-stamp">6 SEC<br><small>SPAWN SHIELD</small></div><span class="note-scribble">Bigger maps. More cover.<br>Pick your own fight. ↗</span></aside>
+          <section class="garage-hero" aria-label="Selected robot"><div class="robot-caption"><span class="unit-number"></span><h1 class="robot-name"></h1><span class="robot-role"></span></div><div class="garage-robot-art"></div><div class="robot-floor-mark">UNARMED / READY TO ROLL</div><div class="character-arrows"><button type="button" data-cycle="-1" aria-label="Previous robot">‹</button><button type="button" data-cycle="1" aria-label="Next robot">›</button></div></section>
+          <aside class="arena-brief"><span class="brief-label">ON THE WORKBENCH</span><div class="brief-sketch"></div><h2 class="brief-name"></h2><p class="brief-finish"></p><button type="button" data-open="maps">CHANGE ARENA <span>↗</span></button></aside>
+        </div>
+        <footer class="workshop-footer">
+          <section class="quick-robots" aria-label="Quick character selection">${CHARACTERS.map((c, i) => `<button type="button" data-character="${c.id}" class="quick-robot"><span class="quick-number">0${i + 1}</span><span class="quick-robot-art"></span><strong>${c.name}</strong></button>`).join('')}</section>
+          <button type="button" class="arena-ticket" data-open="maps"><span class="ticket-ribbon">SCRAP SKIRMISH <b>6 PILOTS</b></span><span class="ticket-body"><span class="ticket-icon">${sketchIcon('maps')}</span><span><strong class="ticket-map"></strong><small class="ticket-summary"></small></span><span class="ticket-arrow">↗</span></span></button>
+          <div class="play-box"><button type="button" class="deploy-button">PLAY <span>➤</span></button><p class="garage-status" role="status" aria-live="polite">Choose a robot and arena. No starter guns.</p></div>
+        </footer>
       </div>
-      <footer class="atlas-footer"><span>ROBOT EXPEDITIONS <i>©</i> WORLD ATLAS / 01</span><span><kbd>WASD</kbd> DRIVE <b>·</b> MOUSE AIM <b>·</b> <kbd>E</kbd> CLAIM A WEAPON</span><span>CHOOSE WELL. EXPLORE BOLDLY.</span></footer>`;
+      <section class="garage-drawer" data-panel="maps" hidden><div class="drawer-panel map-drawer" role="dialog" aria-modal="true" aria-label="Choose an arena"><header><div><span>THE FIELD SKETCHBOOK</span><h2>PICK YOUR PLAYGROUND.</h2></div><button type="button" data-close aria-label="Close arena selection">${sketchIcon('close')}</button></header><p class="drawer-intro">Six big arenas. Real cover, multiple routes, and weapons to find.</p><div class="sketch-map-grid">${MAPS.map((m, i) => `<button type="button" data-map="${m.id}" class="sketch-map-card"><span class="map-card-id">0${i + 1} / ${m.biome.toUpperCase()}</span>${mapSketch(m.id, `card-${m.id}`)}<strong>${m.name}</strong><small>${m.arenaSize} × ${m.arenaSize} m · ${getArenaDefinition(m.id).pickups.length} weapon pads</small><span class="map-card-copy">${m.description}</span><span class="map-card-select">SELECT ARENA ↗</span></button>`).join('')}</div></div></section>
+      <section class="garage-drawer" data-panel="robots" hidden><div class="drawer-panel robot-drawer" role="dialog" aria-modal="true" aria-label="Choose a robot"><header><div><span>CHOOSE YOUR TROUBLEMAKER</span><h2>THREE CHASSIS. YOUR CALL.</h2></div><button type="button" data-close aria-label="Close robot selection">${sketchIcon('close')}</button></header><div class="sketch-robot-grid">${CHARACTERS.map((c, i) => `<button type="button" data-character="${c.id}" class="sketch-robot-card"><span>0${i + 1} / ${c.role.toUpperCase()}</span><div class="roster-art" data-art="${c.id}"></div><strong>${c.name}</strong><p>${c.description}</p><small>SPAWNS UNARMED · MAP-MATCHED FINISH</small></button>`).join('')}</div></div></section>
+      <section class="garage-drawer" data-panel="guide" hidden><div class="drawer-panel guide-drawer" role="dialog" aria-modal="true" aria-label="How to play"><header><div><span>READ BEFORE YOU ROLL</span><h2>THE SHORT FIELD GUIDE.</h2></div><button type="button" data-close aria-label="Close field guide">${sketchIcon('close')}</button></header><div class="guide-flow"><article><b>01</b><h3>ROLL IN UNARMED</h3><p>Players and bots arrive without guns. Your spawn shield gives you six seconds to get moving.</p></article><article><b>02</b><h3>FIND YOUR FIRST GUN</h3><p>Drive over a glowing weapon pad to equip your first weapon automatically. No button needed.</p></article><article><b>03</b><h3>SWAP WITH E</h3><p>Already armed? Pull up to a different weapon and press E. Pads restock after 12 seconds.</p></article></div><dl class="garage-controls"><div><dt>W A S D / ARROWS</dt><dd>Drive and steer</dd></div><div><dt>MOUSE + LEFT CLICK</dt><dd>Aim and fire once armed</dd></div><div><dt>SHIFT</dt><dd>Boost</dd></div><div><dt>E</dt><dd>Swap to a nearby weapon</dd></div><div><dt>1 / 2 / 3</dt><dd>Choose a level-up card</dd></div><div><dt>ESC</dt><dd>Release the mouse / settings</dd></div></dl><p class="guide-tip">Use walls, trees, freight crates, and raised paths to break line of sight. Bots patrol, take time to notice you, and pause between shots.</p></div></section>`;
     document.body.appendChild(this.root);
+    this.shell = this.root.querySelector('.garage-shell')!;
     this.name = this.root.querySelector('input')!;
     this.name.value = new URLSearchParams(location.search).get('name')?.slice(0, 16) ?? (typeof saved?.name === 'string' ? saved.name.slice(0, 16) : '');
     this.deploy = this.root.querySelector('.deploy-button')!;
-    this.status = this.root.querySelector('.atlas-status')!;
-    this.preview = this.root.querySelector('.machine-preview')!;
+    this.status = this.root.querySelector('.garage-status')!;
+    this.preview = this.root.querySelector('.garage-robot-art')!;
+    this.mapPreview = this.root.querySelector('.brief-sketch')!;
+    this.root.querySelectorAll<HTMLElement>('[data-panel]').forEach((node) => this.drawers.set(node.dataset.panel as Panel, node));
+    this.root.querySelectorAll<HTMLButtonElement>('[data-open]').forEach((button) => button.addEventListener('click', () => this.openPanel(button.dataset.open as Panel, button)));
+    this.root.querySelectorAll<HTMLButtonElement>('[data-close],[data-home]').forEach((button) => button.addEventListener('click', () => this.closePanel()));
     this.root.querySelectorAll<HTMLButtonElement>('[data-character]').forEach((button) => button.addEventListener('click', () => {
       if (this.busy) return;
       this.characterId = getCharacter(button.dataset.character).id;
-      this.weaponId = getCharacter(this.characterId).starterWeapon;
-      this.refresh();
+      this.refresh(); this.closePanel();
     }));
     this.root.querySelectorAll<HTMLButtonElement>('[data-map]').forEach((button) => button.addEventListener('click', () => {
-      if (!this.busy) { this.mapId = getMap(button.dataset.map).id; this.refresh(); }
+      if (this.busy) return;
+      this.mapId = getMap(button.dataset.map).id;
+      this.refresh(); this.closePanel();
     }));
-    this.root.querySelectorAll<HTMLButtonElement>('[data-weapon]').forEach((button) => button.addEventListener('click', () => {
-      if (!this.busy) { this.weaponId = getWeapon(button.dataset.weapon).id; this.refresh(); }
+    this.root.querySelectorAll<HTMLButtonElement>('[data-cycle]').forEach((button) => button.addEventListener('click', () => {
+      if (this.busy) return;
+      const i = CHARACTERS.findIndex((c) => c.id === this.characterId);
+      this.characterId = CHARACTERS[(i + Number(button.dataset.cycle) + CHARACTERS.length) % CHARACTERS.length].id;
+      this.refresh();
     }));
+    this.root.addEventListener('keydown', (event) => this.onDialogKey(event));
+    this.drawers.forEach((drawer) => drawer.addEventListener('click', (event) => { if (event.target === drawer) this.closePanel(); }));
     const submit = (): void => {
       if (this.busy) return;
-      const selection: LobbySelection = { name: this.name.value.trim().slice(0, 16), characterId: this.characterId, mapId: this.mapId, weaponId: this.weaponId };
-      try { localStorage.setItem(KEY, JSON.stringify(selection)); } catch { /* Preference persistence is optional. */ }
+      const selection: LobbySelection = { name: this.name.value.trim().slice(0, 16), characterId: this.characterId, mapId: this.mapId };
+      try { localStorage.setItem(KEY, JSON.stringify(selection)); } catch { /* No persistence required to play. */ }
       this.onDeploy?.(selection);
     };
     this.deploy.addEventListener('click', submit);
@@ -88,69 +97,66 @@ export class Lobby {
   }
 
   private refresh(): void {
-    const character = getCharacter(this.characterId);
-    const weapon = getWeapon(this.weaponId);
-    const map = getMap(this.mapId);
-    const p = map.palette;
+    const character = getCharacter(this.characterId), map = getMap(this.mapId), definition = getArenaDefinition(map.id);
     this.root.dataset.biome = map.biome;
-    this.root.style.setProperty('--realm-accent', `#${p.accent.toString(16).padStart(6, '0')}`);
-    this.root.style.setProperty('--realm-ground', `#${p.ground.toString(16).padStart(6, '0')}`);
-    this.root.style.setProperty('--realm-robot', `#${p.robotPaint.toString(16).padStart(6, '0')}`);
-    for (const [key, value] of [['character', this.characterId], ['map', this.mapId], ['weapon', this.weaponId]]) {
-      this.root.querySelectorAll<HTMLButtonElement>(`[data-${key}]`).forEach((b) => b.setAttribute('aria-pressed', String(b.dataset[key] === value)));
+    this.root.style.setProperty('--machine-paint', hex(map.palette.robotPaint));
+    this.root.style.setProperty('--machine-accent', hex(map.palette.robotAccent));
+    for (const [key, value] of [['character', this.characterId], ['map', this.mapId]]) {
+      this.root.querySelectorAll<HTMLButtonElement>(`[data-${key}]`).forEach((button) => button.setAttribute('aria-pressed', String(button.dataset[key] === value)));
     }
-    this.root.querySelector('.selected-biome')!.textContent = `${BIOME_ICONS[map.biome]} ${map.biome.toUpperCase()} REALM / ${map.difficulty}`;
-    this.root.querySelector('.selected-realm-name')!.textContent = map.name;
-    this.root.querySelector('.world-current-name')!.textContent = map.name;
-    this.root.querySelector('.selected-realm-description')!.textContent = map.description;
-    this.root.querySelector('.selected-character-description')!.textContent = character.description;
-    this.root.querySelector('.selected-weapon-description')!.textContent = weapon.description;
-    this.root.querySelector('.machine-model')!.textContent = `${character.name} / ${character.role}`;
-    this.root.querySelector('.machine-finish')!.textContent = map.robotFinish;
-    this.preview.innerHTML = robotSVG(this.characterId, false, this.mapId);
-    if (!this.busy && !this.reconnect) this.deploy.innerHTML = `ENTER ${map.name.toUpperCase()} <span>↗</span>`;
+    this.preview.innerHTML = robotSketch(this.characterId, this.mapId);
+    this.mapPreview.innerHTML = mapSketch(this.mapId, 'brief');
+    this.root.querySelectorAll<HTMLElement>('[data-art]').forEach((node) => { node.innerHTML = robotSketch(getCharacter(node.dataset.art).id, this.mapId, `roster-${node.dataset.art}`); });
+    this.root.querySelectorAll<HTMLElement>('.quick-robot').forEach((node) => { node.querySelector('.quick-robot-art')!.innerHTML = robotSketch(getCharacter(node.dataset.character).id, this.mapId, `quick-${node.dataset.character}`); });
+    this.root.querySelector('.unit-number')!.textContent = `UNIT 0${CHARACTERS.findIndex((c) => c.id === this.characterId) + 1} / WORKSHOP EDITION`;
+    this.root.querySelector('.robot-name')!.textContent = character.name;
+    this.root.querySelector('.robot-role')!.textContent = `${character.role.toUpperCase()} CHASSIS`;
+    this.root.querySelector('.brief-name')!.textContent = map.name;
+    this.root.querySelector('.brief-finish')!.textContent = map.robotFinish;
+    this.root.querySelector('.arena-size')!.textContent = `${map.arenaSize} × ${map.arenaSize}`;
+    this.root.querySelector('.ticket-map')!.textContent = map.name;
+    this.root.querySelector('.ticket-summary')!.textContent = `${map.arenaSize} m arena / ${definition.pickups.length} weapon pads / spawn unarmed`;
+  }
+
+  private openPanel(panel: Panel, source: HTMLElement): void {
+    if (this.busy) return;
+    this.activePanel = panel;
+    this.returnFocus = source;
+    this.drawers.forEach((drawer, id) => { drawer.hidden = id !== panel; });
+    this.shell.inert = true;
+    this.root.querySelectorAll<HTMLButtonElement>('.workshop-tab').forEach((button) => button.setAttribute('aria-pressed', String(button.dataset.open === panel)));
+    this.drawers.get(panel)?.querySelector<HTMLButtonElement>('[data-close]')?.focus();
+  }
+
+  private closePanel(): void {
+    this.drawers.forEach((drawer) => { drawer.hidden = true; });
+    this.shell.inert = false;
+    this.activePanel = null;
+    this.root.querySelectorAll<HTMLButtonElement>('.workshop-tab').forEach((button) => button.setAttribute('aria-pressed', String(button.hasAttribute('data-home'))));
+    this.returnFocus?.focus();
+    this.returnFocus = null;
+  }
+
+  private onDialogKey(event: KeyboardEvent): void {
+    if (!this.activePanel) return;
+    if (event.key === 'Escape') { event.preventDefault(); this.closePanel(); return; }
+    if (event.key !== 'Tab') return;
+    const items = this.drawers.get(this.activePanel)?.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),a[href]');
+    if (!items?.length) return;
+    const first = items[0], last = items[items.length - 1];
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   }
 
   setBusy(busy: boolean, message = ''): void {
     this.busy = busy;
     this.root.querySelectorAll<HTMLButtonElement | HTMLInputElement>('button,input').forEach((node) => { node.disabled = busy; });
-    this.deploy.innerHTML = busy ? 'PREPARING EXPEDITION <span class="deploy-spinner"></span>' : this.reconnect ? 'RETURN TO THE ATLAS <span>↗</span>' : `ENTER ${getMap(this.mapId).name.toUpperCase()} <span>↗</span>`;
+    this.deploy.innerHTML = busy ? 'ROLLING OUT <span class="deploy-spinner"></span>' : this.reconnect ? 'RELOAD <span>↻</span>' : 'PLAY <span>➤</span>';
     if (message) this.setStatus(message);
   }
 
-  setStatus(message: string, error = false): void {
-    this.status.textContent = message;
-    this.status.classList.toggle('error', error);
-  }
-
-  showDisconnected(reason: string): void {
-    this.reconnect = true;
-    this.show();
-    this.setBusy(false);
-    this.setStatus(`${reason}. Return to the atlas to rejoin.`, true);
-  }
-
+  setStatus(message: string, error = false): void { this.status.textContent = message; this.status.classList.toggle('error', error); }
+  showDisconnected(reason: string): void { this.reconnect = true; this.show(); this.setBusy(false); this.setStatus(`${reason}. Reload the garage to rejoin.`, true); }
   show(): void { this.root.hidden = false; }
-  hide(): void { this.root.hidden = true; }
-}
-
-/** Lightweight vector portrait; the playable machines use corresponding 3D attachments. */
-function robotSVG(id: CharacterId, compact = false, mapId: MapId = 'foundry'): string {
-  const c = getCharacter(id);
-  const map = getMap(mapId);
-  const paint = `#${map.palette.robotPaint.toString(16).padStart(6, '0')}`;
-  const accent = `#${map.palette.robotAccent.toString(16).padStart(6, '0')}`;
-  const detail = biomeDetail(map.biome, accent);
-  const armor = id === 'bulwark' ? '<path d="M96 179 75 227 111 245 143 198M278 181 307 225 275 247 244 202" fill="#3c4450" stroke="#9ba6b3" stroke-width="3"/><path d="M128 194 193 174 253 195 247 235 192 259 133 234Z" fill="url(#body-bulwark)" stroke="#b1b5b7" stroke-width="2"/><path d="M147 213 192 198 232 213 192 237Z" fill="#111b25"/><path d="M182 207v21m-10-11h40" stroke="#f9d593" stroke-width="4"/>' : id === 'spectre' ? '<path d="m102 175-20-42 37 27 9 38m141-23 22-43-5 49-27 19" fill="#51576a" stroke="#99a1b5" stroke-width="2"/><path d="m179 105-1-42m4 9 20-9" fill="none" stroke="#a9a6ce" stroke-width="4"/><circle cx="177" cy="60" r="5" fill="#d3b9ff"/>' : '<path d="m108 178-14-43 37 23 7 36m111-17 29-39-2 50-26 20" fill="#53616c" stroke="#a8c8cd" stroke-width="2"/><path d="m145 223 43 12 55-20" fill="none" stroke="#b0f9ff" stroke-width="5"/>';
-  return `<svg class="robot-portrait${compact ? ' compact' : ''}" viewBox="0 0 380 300" role="img" aria-label="${c.name} robot"><defs><linearGradient id="body-${id}" x1="0" y1="0" x2=".7" y2="1"><stop stop-color="${paint}"/><stop offset="1" stop-color="#26313d"/></linearGradient></defs><ellipse cx="193" cy="260" rx="124" ry="16" fill="#000" opacity=".4"/><g stroke-linejoin="round"><g fill="#10151d" stroke="#4f5a68" stroke-width="4"><path d="m67 197 24-14 32 17v46l-25 15-31-17Z"/><path d="m255 182 27-14 32 19v43l-28 18-31-18Z"/><path d="m83 153 24-11 31 16v37l-26 14-29-15Z"/></g><g stroke="#667280" stroke-width="4"><path d="m76 205 21 11v32m-22-29 20 10m170-26 20 11 22-13m-22 13v25m-196-78 22 11v27"/></g><path d="m102 161 96-39 92 49-13 55-84 36-91-43Z" fill="url(#body-${id})" stroke="#9fbbc5" stroke-width="2"/><path d="m102 161 91 48 97-38m-97 38v53" fill="none" stroke="#1a252e" stroke-width="3"/><path d="m119 158 78-29 74 40-78 30Z" fill="#53606b"/><path d="m142 144 52-20 54 29-9 36-47 20-48-26Z" fill="url(#body-${id})" stroke="#9bacba" stroke-width="2"/><path d="m143 144 49 27 56-18m-56 18v38" fill="none" stroke="#1c2632" stroke-width="3"/><path d="m182 128 15-7 14 8-14 7Z" fill="#131c24"/><path d="m211 151 54-27 13 7v13l-54 29-13-8Z" fill="#555f70" stroke="#a7afbc" stroke-width="2"/><path d="m265 124 13 7v13l-13-7Z" fill="${paint}"/><path d="m269 130 6 3v6l-6-3Z" fill="#0d1720"/>${id === 'spectre' ? '<path d="m274 130 51-26 7 4v7l-54 29Z" fill="#8995a9"/><path d="m325 104 7 4v7l-7-3Z" fill="#c8abff"/>' : ''}${armor}${detail}<path d="m113 199 16 8v9l-16-8m139-4 14-6v9l-14 6" fill="#d5ffff"/><path d="m153 180 17 9m59-15 10-4" stroke="${accent}" stroke-width="4"/><g fill="#b4bec7"><circle cx="111" cy="177" r="2"/><circle cx="274" cy="187" r="2"/><circle cx="142" cy="215" r="2"/><circle cx="233" cy="225" r="2"/></g></g></svg>`;
-}
-
-
-function biomeDetail(biome: MapBiome, accent: string): string {
-  if (biome === 'forest') return `<path d="m112 180 25 20 47 21 60-26" fill="none" stroke="#477348" stroke-width="6"/><g fill="${accent}"><ellipse cx="129" cy="190" rx="8" ry="4" transform="rotate(35 129 190)"/><ellipse cx="162" cy="211" rx="8" ry="4"/><ellipse cx="224" cy="203" rx="8" ry="4" transform="rotate(-30 224 203)"/></g>`;
-  if (biome === 'arctic') return `<path d="m103 165 26-7 18 26-20 13Zm147 22 21-20 18 9-14 26Z" fill="#edf9f4" stroke="#a5ccd0" stroke-width="2"/><path d="m148 211 38 18m23-15 24-9" stroke="${accent}" stroke-width="5"/>`;
-  if (biome === 'desert') return '<path d="m130 182 59 27 48-22v18l-48 24-59-28Z" fill="#d8bd8d" stroke="#b3925b" stroke-width="2"/><path d="m146 195v18m17-11v18m17-9v15" stroke="#7f6846" stroke-width="3"/>';
-  if (biome === 'ancient') return `<path d="m128 180 63 31 52-27m-105 11 53 27 42-22" fill="none" stroke="#c7ab65" stroke-width="4"/><circle cx="192" cy="176" r="10" fill="#5b765c" stroke="${accent}" stroke-width="3"/><path d="m187 176 5-6 5 6-5 6Z" fill="${accent}"/>`;
-  if (biome === 'volcanic') return `<path d="m111 174 25 12-3 22-24-13Zm145 14 20-12-3 22-19 11Z" fill="#3a3430" stroke="#846b54" stroke-width="2"/><path d="m116 182 13 7m-14 1 13 7m132-6 9-6m-10 13 9-6" stroke="${accent}" stroke-width="3"/>`;
-  return `<path d="m133 182 53 28m22-8 31-15" stroke="${accent}" stroke-width="5"/><path d="m152 137-5-29m87 33 9-29" stroke="#9baeb6" stroke-width="3"/><circle cx="147" cy="107" r="4" fill="${accent}"/>`;
+  hide(): void { this.closePanel(); this.root.hidden = true; }
 }

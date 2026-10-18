@@ -9,6 +9,8 @@
     "test:aim": "tsx src/test/aimHarness.ts",
     "test:driving": "tsx src/test/drivingHarness.ts",
     "test:lobby": "tsx src/test/lobbyHarness.ts",
+    "test:bots": "node --import tsx src/test/botHarness.ts",
+    "test:maps": "node --import tsx src/test/mapHarness.ts",
     "test:network": "tsx src/test/networkHarness.ts"
   },
   "dependencies": {

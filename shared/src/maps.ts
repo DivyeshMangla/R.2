@@ -200,70 +200,180 @@ function buildRuins(): ArenaBlock[] {
 }
 
 function buildCrossroadsSpawns(): SpawnPoint[] {
-  return [
-    [-33, 0], [33, 0], [0, -33], [0, 33],
-    [-33, -33], [33, -33], [-33, 33], [33, 33],
-  ].map(([x, z]) => ({ position: { x, y: 1.4, z }, yaw: Math.atan2(-x, -z) }));
+  return SPAWN_POINTS.map((spawn) => ({ position: { ...spawn.position }, yaw: spawn.yaw }));
 }
 
 function pad(id: number, weaponId: WeaponId, x: number, z: number): WeaponPad {
   return { id, weaponId, position: { x, y: 0, z } };
 }
 
+/** Two broad approaches connect each outer landmark to the surrounding streets. */
+function outerDeck(blocks: ArenaBlock[], x: number, z: number, hx: number, hz: number, height: number, run: number): void {
+  blocks.push(box('platform', x, height / 2, z, hx, height / 2, hz));
+  const sx = Math.sign(x), sz = Math.sign(z);
+  if (sx !== 0 && sz !== 0) {
+    blocks.push(ramp({ x: x - sx * (hx + run), y: 0, z }, { x: x - sx * hx, y: height, z }, 10));
+    blocks.push(ramp({ x, y: 0, z: z - sz * (hz + run) }, { x, y: height, z: z - sz * hz }, 10));
+  } else if (sx === 0) {
+    for (const sign of [-1, 1]) blocks.push(ramp({ x: sign * (hx + run), y: 0, z }, { x: sign * hx, y: height, z }, 10));
+  } else {
+    for (const sign of [-1, 1]) blocks.push(ramp({ x, y: 0, z: sign * (hz + run) }, { x, y: height, z: sign * hz }, 10));
+  }
+}
+
+/** These are physical districts, rendered from the same blocks as their colliders. */
+function expandDistricts(mapId: MapId, central: readonly ArenaBlock[]): readonly ArenaBlock[] {
+  const blocks = [...central];
+  switch (mapId) {
+    case 'foundry':
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+        outerDeck(blocks, sx * 55, sz * 55, 8, 10, 2.4, 14);
+        blocks.push(box('cover', sx * 55, 3.1, sz * 63, 3, 0.7, 0.6));
+        for (const [x, z] of [[70, 70], [41, 70], [70, 41]]) blocks.push(box('pillar', sx * x, 3.2, sz * z, 1.8, 3.2, 1.8));
+        blocks.push(box('cover', sx * 16, 0.8, sz * 52, 3, 0.8, 1));
+        blocks.push(box('cover', sx * 52, 0.8, sz * 16, 1, 0.8, 3));
+        blocks.push(box('pillar', sx * 86, 2.3, sz * 58, 2, 2.3, 2));
+        blocks.push(box('pillar', sx * 58, 2.3, sz * 86, 2, 2.3, 2));
+      }
+      break;
+    case 'crossroads':
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+        outerDeck(blocks, sx * 55, sz * 55, 8, 8, 3, 16);
+        blocks.push(box('pillar', sx * 72, 4.5, sz * 72, 2.2, 4.5, 2.2));
+        blocks.push(box('pillar', sx * 72, 3.2, sz * 46, 2.2, 3.2, 2.2));
+        for (const offset of [-5, 5]) blocks.push(box('cover', sx * (55 + offset), 3.7, sz * 62, 1, 0.7, 0.6));
+        for (const distance of [55, 78]) {
+          blocks.push(box('cover', sx * 10, 0.9, sz * distance, 3, 0.9, 2));
+          blocks.push(box('cover', sx * distance, 0.9, sz * 10, 2, 0.9, 3));
+        }
+        blocks.push(box('pillar', sx * 80, 1.5, sz * 24, 1, 1.5, 1));
+        blocks.push(box('pillar', sx * 24, 1.5, sz * 80, 1, 1.5, 1));
+      }
+      break;
+    case 'verdant':
+      for (const sign of [-1, 1]) outerDeck(blocks, 0, sign * 58, 8, 7, 1.8, 14);
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+        for (const [dx, dz] of [[-12, -12], [-12, 12], [12, -12], [12, 12], [0, 0]]) {
+          blocks.push(box('pillar', sx * (52 + dx), 3.6, sz * (52 + dz), 1.6, 3.6, 1.6));
+        }
+        blocks.push(box('pillar', sx * 75, 3.2, sz * 55, 1.7, 3.2, 1.7));
+        blocks.push(box('pillar', sx * 55, 3.2, sz * 75, 1.7, 3.2, 1.7));
+        blocks.push(box('cover', sx * 72, 0.7, sz * 72, 5, 0.7, 0.8, -sx * sz * Math.PI / 4));
+        blocks.push(box('cover', sx * 47, 0.9, sz * 24, 2, 0.9, 1.5, sx * Math.PI / 7));
+        blocks.push(box('cover', sx * 24, 0.9, sz * 47, 1.5, 0.9, 2, sz * Math.PI / 7));
+        blocks.push(box('pillar', sx * 80, 3, sz * 12, 1.5, 3, 1.5));
+        blocks.push(box('pillar', sx * 12, 3, sz * 80, 1.5, 3, 1.5));
+      }
+      for (const sign of [-1, 1]) blocks.push(box('cover', sign * 55, 0.6, 0, 8, 0.6, 1, sign * Math.PI / 6));
+      break;
+    case 'dunes':
+      for (const sign of [-1, 1]) outerDeck(blocks, 0, sign * 58, 12, 8, 2.2, 16);
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+        for (const x of [55, 75]) blocks.push(box('cover', sx * x, 2.6, sz * 52, 2, 2.6, 12));
+        blocks.push(box('cover', sx * 7, 2.9, sz * 64, 1, 0.7, 1));
+        blocks.push(box('pillar', sx * 62, 2.4, sz * 76, 2, 2.4, 2));
+        blocks.push(box('pillar', sx * 48, 2, sz * 20, 2, 2, 2));
+        blocks.push(box('pillar', sx * 20, 2, sz * 40, 2, 2, 2));
+        blocks.push(box('cover', sx * 84, 0.9, sz * 84, 4, 0.9, 1, sx * sz * Math.PI / 4));
+        for (const x of [54, 78]) blocks.push(box('cover', sx * x, 1.1, sz * 12, 2, 1.1, 2));
+        blocks.push(box('pillar', sx * 8, 2.3, sz * 82, 1.4, 2.3, 1.4));
+        blocks.push(box('pillar', sx * 82, 2.3, sz * 8, 1.4, 2.3, 1.4));
+      }
+      break;
+    case 'frost':
+      for (const sign of [-1, 1]) outerDeck(blocks, sign * 58, 0, 8, 18, 2.4, 16);
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+        blocks.push(box('cover', sx * 48, 1.8, sz * 52, 3, 1.8, 2, sx * sz * Math.PI / 6));
+        blocks.push(box('pillar', sx * 68, 3, sz * 60, 2.5, 3, 2.5));
+        blocks.push(box('cover', sx * 84, 1.3, sz * 76, 4, 1.3, 1.8, Math.PI / 8));
+        blocks.push(box('cover', sx * 48, 1, sz * 78, 2.5, 1, 2.5));
+        for (const z of [56, 80]) blocks.push(box('cover', sx * 9, 1, sz * z, 2, 1, 2));
+        blocks.push(box('pillar', sx * 84, 2.5, sz * 12, 1.6, 2.5, 1.6));
+        blocks.push(box('pillar', sx * 12, 2.5, sz * 84, 1.6, 2.5, 1.6));
+        blocks.push(box('cover', sx * 40, 1.2, sz * 34, 1.5, 1.2, 1.5));
+        blocks.push(box('cover', sx * 34, 1.2, sz * 40, 1.5, 1.2, 1.5));
+      }
+      break;
+    case 'ruins':
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+        outerDeck(blocks, sx * 55, sz * 55, 6, 6, 1.8, 14);
+        for (const dx of [-12, 12]) for (const dz of [-12, 12]) blocks.push(box('pillar', sx * (55 + dx), 3, sz * (55 + dz), 1.3, 3, 1.3));
+        for (const offset of [-11, 11]) {
+          blocks.push(box('cover', sx * (55 + offset), 1, sz * 76, 4, 1, 0.8));
+          blocks.push(box('cover', sx * 76, 1, sz * (55 + offset), 0.8, 1, 4));
+        }
+        blocks.push(box('cover', sx * 9, 0.9, sz * 55, 2, 0.9, 1));
+        blocks.push(box('cover', sx * 55, 0.9, sz * 9, 1, 0.9, 2));
+      }
+      break;
+  }
+  return blocks;
+}
+
+function expeditionPads(central: readonly WeaponPad[]): readonly WeaponPad[] {
+  const starters: readonly WeaponId[] = ['pulse', 'scatter', 'repeater', 'rail'];
+  const nearSpawns = SPAWN_POINTS.map((spawn, index) => {
+    const radius = Math.hypot(spawn.position.x, spawn.position.z);
+    return pad(index, starters[index % starters.length], spawn.position.x * (radius - 10) / radius, spawn.position.z * (radius - 10) / radius);
+  });
+  return [...nearSpawns, ...central, pad(0, 'pulse', 0, 43), pad(0, 'scatter', 43, 0), pad(0, 'rail', 0, -43), pad(0, 'repeater', -43, 0)]
+    .map((entry, id) => ({ ...entry, id }));
+}
+
 const ARENAS: Readonly<Record<MapId, ArenaDefinition>> = {
   foundry: {
-    blocks: ARENA_BLOCKS,
+    blocks: expandDistricts('foundry', ARENA_BLOCKS),
     spawns: SPAWN_POINTS,
-    pickups: [
+    pickups: expeditionPads([
       pad(0, 'scatter', 0, 22), pad(1, 'pulse', 0, -22),
       pad(2, 'rail', 22, 14), pad(3, 'rail', -22, -14),
       pad(4, 'repeater', 30, -12), pad(5, 'repeater', -30, 12),
-    ],
+    ]),
   },
   crossroads: {
-    blocks: buildCrossroads(),
+    blocks: expandDistricts('crossroads', buildCrossroads()),
     spawns: buildCrossroadsSpawns(),
-    pickups: [
+    pickups: expeditionPads([
       pad(0, 'scatter', -9, 0), pad(1, 'scatter', 9, 0),
       pad(2, 'rail', 0, -25), pad(3, 'pulse', 0, 25),
       pad(4, 'repeater', -32, -22), pad(5, 'repeater', 32, 22),
-    ],
+    ]),
   },
   verdant: {
-    blocks: buildVerdant(),
+    blocks: expandDistricts('verdant', buildVerdant()),
     spawns: buildCrossroadsSpawns(),
-    pickups: [
+    pickups: expeditionPads([
       pad(0, 'scatter', -12, -10), pad(1, 'pulse', 12, 10),
       pad(2, 'rail', -28, 17), pad(3, 'rail', 28, -17),
       pad(4, 'repeater', 0, -27), pad(5, 'repeater', 0, 27),
-    ],
+    ]),
   },
   dunes: {
-    blocks: buildDunes(),
+    blocks: expandDistricts('dunes', buildDunes()),
     spawns: buildCrossroadsSpawns(),
-    pickups: [
+    pickups: expeditionPads([
       pad(0, 'scatter', 0, -15), pad(1, 'pulse', 0, 15),
       pad(2, 'rail', -29, 8), pad(3, 'rail', 29, -8),
       pad(4, 'repeater', -8, 28), pad(5, 'repeater', 8, -28),
-    ],
+    ]),
   },
   frost: {
-    blocks: buildFrost(),
+    blocks: expandDistricts('frost', buildFrost()),
     spawns: buildCrossroadsSpawns(),
-    pickups: [
+    pickups: expeditionPads([
       pad(0, 'scatter', 0, 0), pad(1, 'pulse', -27, 0),
       pad(2, 'rail', 27, 0), pad(3, 'rail', 0, -28),
       pad(4, 'repeater', 0, 28), pad(5, 'repeater', -30, -28),
-    ],
+    ]),
   },
   ruins: {
-    blocks: buildRuins(),
+    blocks: expandDistricts('ruins', buildRuins()),
     spawns: buildCrossroadsSpawns(),
-    pickups: [
+    pickups: expeditionPads([
       pad(0, 'scatter', -21, 0), pad(1, 'pulse', 21, 0),
       pad(2, 'rail', 0, -22), pad(3, 'rail', 0, 22),
       pad(4, 'repeater', -28, 28), pad(5, 'repeater', 28, -28),
-    ],
+    ]),
   },
 };
 
