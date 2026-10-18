@@ -43,6 +43,7 @@ import {
   type WeaponId,
 } from '@robot-arena/shared';
 import { AudioSystem } from './audio/AudioSystem';
+import type { VehicleAudioInput } from './audio/VehicleAudioModel';
 import { AimDebug } from './debug/AimDebug';
 import { DebugGUI } from './debug/DebugGUI';
 import { InputManager } from './input/InputManager';
@@ -51,7 +52,8 @@ import { SnapshotBuffer, type InterpolatedRobot } from './net/SnapshotBuffer';
 import { DebrisSystem } from './physics/DebrisSystem';
 import { LocalPredictor } from './physics/LocalPredictor';
 import { PhysicsWorld } from './physics/PhysicsWorld';
-import { CameraController } from './render/CameraController';
+import { CameraController, type CameraMotion } from './render/CameraController';
+import type { DrivingViewIntent } from './render/DrivingCamera';
 import { buildArena, type ArenaVisuals } from './render/env/ArenaBuilder';
 import { DustMotes } from './render/env/DustMotes';
 import { ProjectileSystem } from './render/ProjectileSystem';
@@ -127,6 +129,9 @@ export class Game {
   private mySpawnCount = -1;
   private localFireCooldown = 0;
   private lastThrottle = 0;
+  private driveForwardSpeed = 0;
+  private driveGrounded = false;
+  private driveYaw = 0;
   private phase: number = MatchPhase.PLAYING;
   private lastSnap: SnapshotMsg | null = null;
   private readonly deathPos = new THREE.Vector3();
@@ -157,6 +162,9 @@ export class Game {
 
   // Reused per-frame scratch (no allocation in the frame loop).
   private readonly telemetry: WheelTelemetry = { suspension: [0, 0, 0, 0], rotation: [0, 0, 0, 0], steering: [0, 0, 0, 0], contact: [true, true, true, true] };
+  private readonly vehicleAudio: VehicleAudioInput = { forwardSpeed: 0, lateralSpeed: 0, throttle: 0, driveDemand: 0, grounded: false, boosting: false, alive: false, maxSpeed: 12, surface: 'volcanic', dt: 0, active: false };
+  private readonly cameraMotion: CameraMotion = { velocity: { x: 0, y: 0, z: 0 }, referenceSpeed: 12, steady: false, active: false };
+  private readonly drivingIntent: DrivingViewIntent = { active: false, mouseIdleSeconds: 0, mouseSerial: 0, firing: false, steady: false, recenter: false };
   private readonly mineSamples: MineSample[] = [];
   private readonly vfxStats: VFXStats = { particles: 0, lights: 0 };
   private readonly perfSample: PerfSample = { frameMs: 0, sceneDraws: 0, totalDraws: 0, triangles: 0, particles: 0, lights: 0, preset: 'High' };
@@ -187,6 +195,7 @@ export class Game {
       onResults: (m) => this.onResults(m),
       onShotResult: (m) => this.onShotResult(m),
       onDisconnect: (reason) => {
+        this.audio.setActive(false);
         this.connected = false;
         this.started = false;
         this.ui.setHudVisible(false);
@@ -196,6 +205,9 @@ export class Game {
         this.lobby.onDeploy = () => location.reload();
       },
     });
+    // These events run even when requestAnimationFrame pauses in a hidden tab.
+    window.addEventListener('blur', () => this.audio.setActive(false));
+    document.addEventListener('visibilitychange', () => { if (document.hidden) this.audio.setActive(false); });
   }
 
   async start(): Promise<void> {
@@ -569,7 +581,7 @@ export class Game {
         if (e.ff > 0) this.projectiles.fastForward(e.pid, e.ff);
         const v = this.fleet.get(e.owner);
         if (v && e.b % getWeapon(e.weaponId).pellets === 0) this.muzzleFlashFor(v, e.b);
-        if (e.b === 0) this.audio.cannon(_v.set(e.p.x, e.p.y, e.p.z), cam, false);
+        if (e.b === 0) this.audio.cannon(_v.set(e.p.x, e.p.y, e.p.z), cam, false, e.weaponId);
         return;
       }
       case 'bounce':
@@ -776,7 +788,7 @@ export class Game {
       const playing = this.phase === MatchPhase.PLAYING;
       const frame = this.input.sample();
       this.solveLocalAim(frame, renderT);
-      if (!playing || this.menu.isOpen) {
+      if (!playing || this.menu.isOpen || !this.input.isLocked || document.hidden) {
         frame.throttle = 0;
         frame.steer = 0;
         frame.buttons = 0;
@@ -854,7 +866,7 @@ export class Game {
       this.projectiles.spawn(this.myId, s.origin, vel, st.ricochetBounces, color, 0, frame.seq, s.barrel, true, cfg.lifetime);
       if (v && s.barrel % getWeapon(this.myWeaponId).pellets === 0) this.muzzleFlashFor(v, s.barrel);
     }
-    this.audio.cannon(null, null, true);
+    this.audio.cannon(null, null, true, this.myWeaponId);
     this.cameraCtl.addTrauma(0.1);
   }
 
@@ -915,6 +927,7 @@ export class Game {
     v.hp = state.hp;
     v.maxHp = state.maxHp;
     v.steerInput = steer;
+    v.steeringAngle = state.steeringAngle;
   }
 
   /** Visual-only effects that follow a robot: skids, tyre smoke, exhaust, damage, repair, landings. */
@@ -933,12 +946,14 @@ export class Game {
     }
     if (v.landingImpact > 0) {
       vfx.landingDust(v.position, v.landingImpact);
-      if (isMe) this.cameraCtl.addTrauma(Math.min(0.35, v.landingImpact * 0.03));
+      if (isMe) {
+        this.cameraCtl.addTrauma(Math.min(0.25, v.landingImpact * 0.02));
+        this.audio.landing(v.landingImpact);
+      }
     }
     if (v.flags & RobotFlags.BOOSTING) {
       this.fleet.chassisDirection(v, BACK, _dir);
       for (const tip of EXHAUST_TIPS) vfx.exhaust(this.fleet.chassisPoint(v, tip, _v), _dir, true);
-      if (isMe && v.dashTimer <= 0) vfx.dashStreaks(v.position, _dir);
     }
     if (v.dashTimer > 0.3) {
       this.fleet.chassisDirection(v, BACK, _dir);
@@ -987,7 +1002,6 @@ export class Game {
       } else {
         this.debris.syncRobot(this.myId, _pos, _quat, false);
       }
-      this.audio.updateEngine(_vel.length(), this.lastThrottle, boosting, alive);
     }
 
     // Remote robots (interpolated ~100 ms in the past).
@@ -1019,13 +1033,49 @@ export class Game {
       this.robotEffects(v, grounded, isMe, vdt);
     }
 
+    const alive = !!me && (me.flags & RobotFlags.ALIVE) !== 0;
+    const drivingActive = alive && this.started && this.connected && this.phase === MatchPhase.PLAYING
+      && this.input.isLocked && !this.menu.isOpen && !document.hidden && document.hasFocus();
+    const controller = this.predictor.controller;
+    const referenceSpeed = physicsConfig.maxSpeed * (controller?.modifiers.speedMul ?? 1);
+    this.driveYaw = myVisual ? yawFromQuat(myVisual.quaternion) : this.input.viewYaw;
+    const sin = Math.sin(this.driveYaw), cos = Math.cos(this.driveYaw);
+    this.driveForwardSpeed = myVisual ? myVisual.velocity.x * sin + myVisual.velocity.z * cos : 0;
+    this.driveGrounded = alive && this.telemetry.contact.some(Boolean);
+    const sound = this.vehicleAudio;
+    sound.forwardSpeed = this.driveForwardSpeed;
+    sound.lateralSpeed = myVisual ? myVisual.velocity.x * cos - myVisual.velocity.z * sin : 0;
+    sound.throttle = this.lastThrottle;
+    sound.driveDemand = controller?.sim.driveDemand ?? 0;
+    sound.grounded = this.driveGrounded;
+    sound.boosting = boosting;
+    sound.alive = alive;
+    sound.maxSpeed = referenceSpeed;
+    sound.surface = getMap(this.mapId).biome;
+    sound.dt = dt;
+    sound.active = drivingActive;
+    this.audio.updateVehicle(sound);
+
     // Camera: death cam orbits the killer for 2 s, otherwise the orbit rig.
     const cam = this.renderer.camera;
     const killer = this.killerId >= 0 ? this.fleet.get(this.killerId) : undefined;
     const deathFocus = killer && killer.visible ? killer.position : this.deathPos;
     if (!(me && (me.flags & RobotFlags.ALIVE) === 0 && this.cameraCtl.updateDeathCam(deathFocus, dt))) {
       this.cameraCtl.deathCamActive = false;
-      this.cameraCtl.update(camTarget, this.input.viewYaw, this.input.viewPitch, boosting, dt);
+      const intent = this.drivingIntent;
+      intent.active = drivingActive;
+      intent.mouseIdleSeconds = this.input.mouseIdleSeconds;
+      intent.mouseSerial = this.input.mouseSerial;
+      intent.firing = this.input.isFiring;
+      intent.steady = this.input.isSteadyCamera;
+      intent.recenter = this.input.consumeRecenter();
+      this.input.viewYaw = this.cameraCtl.resolveDrivingYaw(this.input.viewYaw, this.driveYaw, this.driveForwardSpeed, dt, intent);
+      const motion = this.cameraMotion;
+      motion.velocity = myVisual?.velocity ?? this.cameraMotion.velocity;
+      motion.referenceSpeed = referenceSpeed;
+      motion.steady = intent.steady;
+      motion.active = drivingActive;
+      this.cameraCtl.update(camTarget, this.input.viewYaw, this.input.viewPitch, boosting, dt, motion);
     }
     this.renderer.followShadow(camTarget);
     this.audio.setListener(cam.position);
@@ -1124,6 +1174,7 @@ export class Game {
       }
     }
     ui.setPickupPrompt(prompt);
+    ui.setDriving(this.driveForwardSpeed, this.lastThrottle, this.input.viewYaw - this.driveYaw, this.driveGrounded, !!this.predictor.controller?.sim.boosting, alive);
 
     if (me && info) {
       const c = this.predictor.controller;

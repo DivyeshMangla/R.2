@@ -29,6 +29,8 @@ npm run typecheck   # strict tsc over shared, server and client
 npm run build       # production client build (client/dist)
 npm run test:aim    # headless aim / hit-registration harness (writes server/test-results/aim-after.txt)
 npm run test:driving # headless speed, braking, steering, boost and landing checks
+npm run test:camera # chase/aim ownership, framing, body load transfer and input reset
+npm run test:audio  # powertrain envelopes, sample validity, voice limits and graph cleanup
 npm run test:lobby  # all six maps: geometry, spawn/pad clearance, ramps, loadouts, pickups
 npm run test:bots   # unarmed/protected targets, sight, acquisition, firing pace and patrol
 npm run test:maps   # physical starter drives, ramps, turn clearance and connected routes
@@ -41,9 +43,12 @@ The garage background is `client/public/assets/garage/garage-sketch.svg`. Robot 
 
 | Input | Action |
 | --- | --- |
-| W A S D / arrow keys | Drive |
+| W / S (up / down arrows) | Accelerate / brake, then reverse |
+| A / D (left / right arrows) | Steer the front wheels |
 | Mouse (pointer lock) | Aim the turret and orbit the camera |
 | Left click | Fire the cannon |
+| Hold right click | Keep the camera direction and steady framing while aiming |
+| C | Smoothly recenter the camera behind the robot |
 | Shift | Boost (uses the energy meter) |
 | Space | Use active abilities (Rocket Dash, EMP Burst) |
 | E | Swap weapons at a nearby available pad (first pickup is automatic) |
@@ -80,7 +85,11 @@ client/   Game (fixed-step accumulator loop, rendering decoupled)
 - **Interpolation:** remote robots render 100 ms in the past. Position is lerped and rotation is slerped between snapshots, and interpolation never crosses a respawn.
 - **Events:** shots, impacts, deaths and similar are batched once per server tick and replayed on the interpolated timeline. Events that affect the local player are applied immediately.
 - **Physics tuning:** every constant lives in `shared/src/physicsConfig.ts`. Edits in lil-gui are applied locally, sent to the server, validated and clamped there, then broadcast so prediction stays in sync.
-- **Driving:** the base speed limit is 12 m/s (43 km/h), or 15 m/s (54 km/h) with boost. Engine power tapers near the limit, coasting slows the robot, and steering eases toward a speed-sensitive angle. Rocket Dash adds a short burst beyond the driving limit. The smoothed steering angle is included in snapshots at index 28 (radians × 10000) and restored before prediction replay; older snapshots default it to zero.
+- **Driving:** the base speed limit is 16 m/s (58 km/h), or 20 m/s (72 km/h) with boost. Engine power, braking and rolling resistance are scaled for the higher speed. Throttle builds progressively, speed-sensitive front-wheel steering eases through centre, and opposing throttle brakes before reversing. Tyre forces retain momentum through corners; steering never forces chassis yaw. Rocket Dash adds a short burst beyond the driving limit. Steering and drivetrain state are restored before prediction replay.
+- **Driving camera:** after 1.2 seconds without mouse motion, the view gradually follows the chassis while driving forward above 2 m/s. Firing, holding right click, deliberate backward looks, reverse, menus and death stop automatic follow. C smoothly recentres even from a backward view; fresh mouse motion cancels it. Right click also removes speed/boost framing changes and reduces shake to 25%. The normal field of view widens from 70° toward 76° with speed, and 80° with boost. Look-ahead is limited to 0.6 m; shake is restrained and kept outside the aim ray. The normal camera pairs orbit position directly with view direction; the vehicle's already-smoothed pose avoids extra camera lag at speed.
+
+- **Vehicle audio:** a virtual transmission and smoothed load drive quiet combustion, intake, recorded engine texture, road, tire scrub, wind and shifting. Ground contact and horizontal velocity gate rolling noise; braking does not rev the engine. Each weapon has its own transient, loud local events briefly duck the motor, and combat voices are capped at 28 with graph cleanup. Menus, hidden tabs, death and disconnect fade the driving sound. The engine recording is by [qubodup](https://opengameart.org/content/car-engine-loop-96khz-4s), used under CC BY 3.0; modifications and source details are in [the audio credits](client/public/assets/audio/README.md).
+- **Review and measurements:** [five scored design iterations](docs/driving-audio-review.md) document the selected handling/audio approach and measured stopping, steering and acceleration gates. Scores are design reviews; subjective listening and real driving still need a playtest.
 
 ## Known limitations
 

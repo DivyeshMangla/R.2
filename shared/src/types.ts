@@ -112,9 +112,11 @@ export interface RobotNetState {
   aimPitch: number;
   /** Smoothed front-wheel angle, radians; restored before prediction replay. */
   steeringAngle: number;
+  /** Signed propulsion spool, restored before replay. */
+  driveDemand: number;
 }
 
-/** Robot snapshot entry. Appended fields: index 27 aimPitch, index 28 steeringAngle (both *10000). */
+/** Robot snapshot entry. Appended: 27 aimPitch, 28 steeringAngle, 29 driveDemand (all *10000). */
 export type RobotWire = number[];
 
 const POS_Q = 1000;
@@ -142,6 +144,7 @@ export function encodeRobot(s: RobotNetState): RobotWire {
     Math.round(s.fireCooldown * 1000),
     Math.round(s.aimPitch * 10000),
     Math.round(s.steeringAngle * 10000),
+    Math.round(s.driveDemand * 10000),
   ];
 }
 
@@ -169,6 +172,7 @@ export function decodeRobot(w: RobotWire): RobotNetState {
     fireCooldown: w[26] / 1000,
     aimPitch: (w[27] ?? 0) / 10000,
     steeringAngle: (w[28] ?? 0) / 10000,
+    driveDemand: (w[29] ?? 0) / 10000,
   };
 }
 

@@ -24,6 +24,14 @@ export interface PhysicsConfig {
   steerSpeedFalloff: number;
   /** Steering response rate (1/s), shared by simulation and prediction. */
   steerResponse: number;
+  /** Return-to-centre rate (1/s), faster than steering into a corner. */
+  steerReturnResponse: number;
+  /** Propulsion spool rate (1/s). Brakes bypass this filter. */
+  throttleResponse: number;
+  /** Comfortable full-lock lateral acceleration at speed (m/s²). */
+  maxLateralAcceleration: number;
+  /** Gentle grounded lateral-velocity damping (1/s), never a heading servo. */
+  lateralDamping: number;
   downforce: number;
 
   // Suspension & tyres
@@ -115,20 +123,24 @@ export const DEFAULT_PHYSICS_CONFIG: Readonly<PhysicsConfig> = Object.freeze({
 
   chassisMass: 360,
   centerOfMassY: -0.38,
-  linearDamping: 0.05,
-  angularDamping: 0.9,
+  linearDamping: 0.035,
+  angularDamping: 0.65,
   chassisFriction: 0.4,
   chassisRestitution: 0.15,
 
-  engineForce: 3000,
+  engineForce: 1850,
   reverseFactor: 0.6,
-  maxSpeed: 12,
-  brakeForce: 24,
-  rollingBrake: 3.2,
-  maxSteerAngle: 0.45,
-  steerSpeedFalloff: 0.1,
-  steerResponse: 10,
-  downforce: 0.35,
+  maxSpeed: 16,
+  brakeForce: 17.5,
+  rollingBrake: 2.4,
+  maxSteerAngle: 0.60,
+  steerSpeedFalloff: 0.025,
+  steerResponse: 15,
+  steerReturnResponse: 25,
+  throttleResponse: 7,
+  maxLateralAcceleration: 8,
+  lateralDamping: 0.35,
+  downforce: 0.2,
 
   suspensionRestLength: 0.32,
   suspensionStiffness: 34,
@@ -218,6 +230,10 @@ export const PHYSICS_CONFIG_RANGES: Readonly<Record<PhysicsConfigKey, readonly [
   maxSteerAngle: [0.1, 1.0, 0.01],
   steerSpeedFalloff: [0, 0.3, 0.005],
   steerResponse: [2, 30, 0.5],
+  steerReturnResponse: [2, 40, 0.5],
+  throttleResponse: [1, 30, 0.5],
+  maxLateralAcceleration: [3, 20, 0.25],
+  lateralDamping: [0, 3, 0.05],
   downforce: [0, 3, 0.01],
   suspensionRestLength: [0.05, 0.8, 0.01],
   suspensionStiffness: [5, 120, 0.5],

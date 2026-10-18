@@ -16,6 +16,8 @@
     "test:lobby": "npm run test:lobby -w server",
     "test:bots": "npm run test:bots -w server",
     "test:maps": "npm run test:maps -w server",
+    "test:camera": "npm run test:camera -w server",
+    "test:audio": "npm run test:audio -w client",
     "test:network": "npm run test:network -w server"
   },
   "devDependencies": {

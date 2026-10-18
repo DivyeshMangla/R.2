@@ -2,6 +2,14 @@ import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
 import type { World } from '@dimforge/rapier3d-compat';
 import { aimDirection, cameraOrigin, CollisionGroups, DEFAULT_CAMERA_RIG, type Vec3 } from '@robot-arena/shared';
+import { cameraBlend, DrivingCamera, type DrivingViewIntent } from './DrivingCamera';
+
+export interface CameraMotion {
+  velocity: Vec3;
+  referenceSpeed: number;
+  steady: boolean;
+  active: boolean;
+}
 
 export interface CameraTuning {
   /** Orbit rig (see shared/aim.ts cameraOrigin). */
@@ -39,10 +47,10 @@ export class CameraController {
     stiffness: 55,
     damping: 1.0,
     fov: 70,
-    boostFov: 82,
-    fovLerp: 6,
-    shakeMaxOffset: 0.45,
-    shakeMaxAngle: 0.05,
+    boostFov: 80,
+    fovLerp: 3.4,
+    shakeMaxOffset: 0.12,
+    shakeMaxAngle: 0.018,
     shakeDecay: 1.6,
     shakeFrequency: 22,
   };
@@ -58,6 +66,10 @@ export class CameraController {
   private readonly lookAt = new THREE.Vector3();
   private readonly pivot = { x: 0, y: 0, z: 0 };
   private readonly castDir = { x: 0, y: 0, z: 0 };
+  private readonly followTarget = new THREE.Vector3();
+  private readonly lookAhead = new THREE.Vector3();
+  private readonly driving = new DrivingCamera();
+  private boomScale = 1;
   private world: World | null = null;
   private probe: RAPIER.Ball | null = null;
   /** Distance the collision probe currently allows (eases back out after a hit). */
@@ -82,6 +94,14 @@ export class CameraController {
   snap(): void {
     this.initialized = false;
     this.allowed = Infinity;
+    this.lookAhead.set(0, 0, 0);
+    this.boomScale = 1;
+    this.driving.reset();
+  }
+
+  /** Returns a view yaw; it never changes chassis steering or turret inputs. */
+  resolveDrivingYaw(viewYaw: number, chassisYaw: number, forwardSpeed: number, dt: number, intent: DrivingViewIntent): number {
+    return this.driving.update(viewYaw, chassisYaw, forwardSpeed, dt, intent);
   }
 
   /** Enables spherecast collision against the static arena in `world`. */
@@ -166,21 +186,34 @@ export class CameraController {
     }
   }
 
-  update(target: THREE.Vector3, viewYaw: number, viewPitch: number, boosting: boolean, dt: number): void {
+  update(target: THREE.Vector3, viewYaw: number, viewPitch: number, boosting: boolean, dt: number, motion?: CameraMotion): void {
     const t = this.tuning;
     this.time += dt;
-    const rig = { distance: t.distance * (boosting ? 1.08 : 1), height: t.height, lookHeight: t.lookHeight };
-    cameraOrigin(target, viewYaw, viewPitch, rig, this.desired);
+    const speed = motion ? Math.hypot(motion.velocity.x, motion.velocity.z) : 0;
+    const speedFraction = motion?.active ? Math.min(1, speed / Math.max(1, motion.referenceSpeed)) : 0;
+    const steady = !!motion?.steady;
+    const dynamic = !!motion?.active && !steady;
+    const lead = dynamic && speed > 0.01 ? Math.min(0.6, speed * 0.045) / speed : 0;
+    const leadBlend = cameraBlend(dt, steady ? 9 : 4);
+    this.lookAhead.x += ((motion?.velocity.x ?? 0) * lead - this.lookAhead.x) * leadBlend;
+    this.lookAhead.z += ((motion?.velocity.z ?? 0) * lead - this.lookAhead.z) * leadBlend;
+    this.followTarget.copy(target).add(this.lookAhead);
+    const scale = dynamic ? 1 + speedFraction * 0.025 + (boosting ? 0.025 : 0) : 1;
+    this.boomScale += (scale - this.boomScale) * cameraBlend(dt, 3.4);
+    const rig = { distance: t.distance * this.boomScale, height: t.height, lookHeight: t.lookHeight };
+    cameraOrigin(this.followTarget, viewYaw, viewPitch, rig, this.desired);
     this.desiredV.set(this.desired.x, this.desired.y, this.desired.z);
 
     if (!this.initialized) {
-      this.pos.copy(this.desiredV);
       this.vel.set(0, 0, 0);
       this.initialized = true;
     }
+    // The vehicle pose is already interpolated. Keep orbit position paired with
+    // view direction; a second world-position spring makes mouse aim drift off
+    // the robot and falls metres behind at speed. Framing above is filtered.
+    this.pos.copy(this.desiredV);
     this.punch = Math.max(0, this.punch - dt * 2.8);
-    const punch = this.punch * this.punch;
-    this.spring(this.pos, this.vel, this.desiredV, dt, t.stiffness);
+    const punch = steady ? 0 : this.punch * this.punch;
     // Never drop below the floor.
     this.pos.y = Math.max(this.pos.y, 0.6);
     this.collide(target, dt, punch);
@@ -195,7 +228,7 @@ export class CameraController {
 
     // Trauma shake (smooth pseudo-noise from layered sines).
     this.trauma = Math.max(0, this.trauma - t.shakeDecay * dt);
-    const s = this.trauma * this.trauma;
+    const s = this.trauma * this.trauma * (steady ? 0.25 : 1);
     if (s > 0) {
       const f = t.shakeFrequency;
       const n = (o: number): number => Math.sin(this.time * f + o) * 0.6 + Math.sin(this.time * f * 1.73 + o * 2.1) * 0.4;
@@ -206,8 +239,9 @@ export class CameraController {
       cam.rotateX(n(41) * t.shakeMaxAngle * 0.5 * s);
     }
 
-    const fovTarget = (boosting ? t.boostFov : t.fov) - this.punch * this.punch * 7;
-    cam.fov += (fovTarget - cam.fov) * Math.min(1, dt * t.fovLerp);
+    const drivingFov = dynamic ? (boosting ? t.boostFov : t.fov + speedFraction * 6) : t.fov;
+    const fovTarget = drivingFov - (steady ? 0 : this.punch * this.punch * 7);
+    cam.fov += (fovTarget - cam.fov) * cameraBlend(dt, t.fovLerp);
     cam.updateProjectionMatrix();
   }
 }

@@ -37,6 +37,8 @@ export interface RobotSimState {
   flipTimer: number;
   boosting: boolean;
   steeringAngle: number;
+  /** Smoothed signed propulsion demand; braking clears it immediately. */
+  driveDemand: number;
 }
 
 export interface RobotPhysState {
@@ -72,7 +74,7 @@ export class RobotController {
   readonly body: RigidBody;
   readonly collider: Collider;
   readonly vehicle: DynamicRayCastVehicleController;
-  readonly sim: RobotSimState = { boostEnergy: 100, dashCooldown: 0, flipTimer: 0, boosting: false, steeringAngle: 0 };
+  readonly sim: RobotSimState = { boostEnergy: 100, dashCooldown: 0, flipTimer: 0, boosting: false, steeringAngle: 0, driveDemand: 0 };
   modifiers: RobotModifiers = { speedMul: 1, engineMul: 1, gripMul: 1, hasDash: false };
 
   private readonly world: World;
@@ -149,18 +151,20 @@ export class RobotController {
     const mods = this.modifiers;
     this.applyConfig();
 
-    const throttle = stunned ? 0 : input.throttle;
-    const steer = stunned ? 0 : input.steer;
+    const throttle = stunned ? 0 : clamp(input.throttle, -1, 1);
+    const steer = stunned ? 0 : clamp(input.steer, -1, 1);
     const rot = this.body.rotation();
     const fwd = rotateVec(rot, { x: 0, y: 0, z: 1 });
     const up = rotateVec(rot, { x: 0, y: 1, z: 0 });
     const lin = this.body.linvel();
     const forwardSpeed = dot(lin, fwd);
+    const planarSpeed = Math.hypot(lin.x, lin.z);
     const mass = cfg.chassisMass;
 
     // Boost meter.
     const sim = this.sim;
-    const wantBoost = !stunned && input.boost && throttle > 0.1 && sim.boostEnergy > 0.5;
+    const directionBraking = throttle * forwardSpeed < 0 && Math.abs(forwardSpeed) > 0.6;
+    const wantBoost = !stunned && !directionBraking && input.boost && throttle > 0.1 && sim.boostEnergy > 0.5;
     if (wantBoost) {
       sim.boostEnergy = Math.max(0, sim.boostEnergy - cfg.boostDrainPerSec * dt);
       sim.boosting = true;
@@ -172,26 +176,40 @@ export class RobotController {
     const maxSpeed = cfg.maxSpeed * mods.speedMul * (sim.boosting ? cfg.boostMaxSpeedMul : 1);
     const driveLimit = maxSpeed * (throttle < 0 ? 0.5 : 1);
     const speedAlongInput = forwardSpeed * Math.sign(throttle);
-    let engine = (throttle * cfg.engineForce * mods.engineMul * (sim.boosting ? cfg.boostForceMul : 1)) / 4;
+    // Keyboard edges should not slam full axle torque into the tyres. Braking
+    // overrides the spool immediately, and a direction change starts from zero.
+    if (directionBraking || stunned || throttle === 0 || throttle * sim.driveDemand < 0) sim.driveDemand = 0;
+    if (!directionBraking && !stunned && throttle !== 0) {
+      sim.driveDemand += (throttle - sim.driveDemand) * (1 - Math.exp(-cfg.throttleResponse * dt));
+    }
+    let engine = (sim.driveDemand * cfg.engineForce * mods.engineMul * (sim.boosting ? cfg.boostForceMul : 1)) / 4;
     if (throttle < 0) engine *= cfg.reverseFactor;
     // Ease off over the final 20% instead of alternating full power and zero at the limit.
     engine *= clamp((driveLimit - speedAlongInput) / (driveLimit * 0.2), 0, 1);
 
     let brake = 0;
-    if (throttle * forwardSpeed < 0 && Math.abs(forwardSpeed) > 1.0) {
+    if (directionBraking) {
       brake = cfg.brakeForce;
       engine = 0;
     } else if (Math.abs(throttle) < 0.05) {
       brake = cfg.rollingBrake;
     } else if (speedAlongInput > driveLimit) {
       // Gently settle after boost/dash; keep external knockback instead of clamping velocity.
-      brake = Math.min(cfg.rollingBrake, ((speedAlongInput - driveLimit) * mass * dt) / WHEEL_ANCHORS.length);
+      brake = Math.min(cfg.brakeForce * 0.4, ((speedAlongInput - driveLimit) * mass * dt) / WHEEL_ANCHORS.length);
     }
     if (stunned) brake = cfg.brakeForce * 0.4;
 
     // Positive steer input turns right; with +Z forward, right is -X, i.e. negative yaw.
-    const targetSteer = (-steer * cfg.maxSteerAngle) / (1 + Math.abs(forwardSpeed) * cfg.steerSpeedFalloff);
-    sim.steeringAngle += (targetSteer - sim.steeringAngle) * (1 - Math.exp(-cfg.steerResponse * dt));
+    const geometricLock = cfg.maxSteerAngle / (1 + planarSpeed * cfg.steerSpeedFalloff);
+    const wheelbase = Math.abs(WHEEL_ANCHORS[0].z - WHEEL_ANCHORS[2].z);
+    // Smooth harmonic blend approaches the bicycle-model lateral-acceleration
+    // envelope at speed, while keeping the full parking lock near standstill.
+    const lateralLock = Math.atan((cfg.maxLateralAcceleration * wheelbase) / Math.max(0.01, planarSpeed * planarSpeed));
+    const lock = 1 / Math.sqrt(1 / (geometricLock * geometricLock) + 1 / (lateralLock * lateralLock));
+    const targetSteer = -steer * lock;
+    const centering = Math.abs(targetSteer) < Math.abs(sim.steeringAngle) && targetSteer * sim.steeringAngle >= 0;
+    const steeringResponse = centering ? cfg.steerReturnResponse : cfg.steerResponse;
+    sim.steeringAngle += (targetSteer - sim.steeringAngle) * (1 - Math.exp(-steeringResponse * dt));
     const v = this.vehicle;
     for (let i = 0; i < WHEEL_ANCHORS.length; i++) {
       v.setWheelEngineForce(i, engine);
@@ -211,8 +229,20 @@ export class RobotController {
 
     v.updateVehicle(dt, undefined, CollisionGroups.WHEEL_QUERY);
 
-    let grounded = false;
-    for (let i = 0; i < WHEEL_ANCHORS.length; i++) if (v.wheelIsInContact(i)) grounded = true;
+    let contacts = 0;
+    for (let i = 0; i < WHEEL_ANCHORS.length; i++) if (v.wheelIsInContact(i)) contacts++;
+    const grounded = contacts > 0;
+
+    // A small tyre-like scrub removes unwanted lateral drift without prescribing
+    // heading, erasing external knockback, or straightening an airborne chassis.
+    if (contacts >= 2 && up.y > 0.75 && cfg.lateralDamping > 0) {
+      const flatForward = normalize({ x: fwd.x, y: 0, z: fwd.z });
+      const right = { x: flatForward.z, y: 0, z: -flatForward.x };
+      const lateralSpeed = dot(this.body.linvel(), right);
+      const contactWeight = (contacts / WHEEL_ANCHORS.length) * clamp((up.y - 0.75) / 0.25, 0, 1);
+      const scrub = -lateralSpeed * mass * (1 - Math.exp(-cfg.lateralDamping * contactWeight * dt));
+      this.body.applyImpulse({ x: right.x * scrub, y: 0, z: right.z * scrub }, true);
+    }
 
     if (grounded) {
       const df = cfg.downforce * Math.abs(forwardSpeed) * mass * dt;
@@ -258,6 +288,7 @@ export class RobotController {
     this.sim.flipTimer = 0;
     this.sim.boosting = false;
     this.sim.steeringAngle = 0;
+    this.sim.driveDemand = 0;
   }
 
   setEnabled(enabled: boolean): void {

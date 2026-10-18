@@ -145,6 +145,7 @@ export class ServerRobot {
       fireCooldown: this.fireCooldown,
       aimPitch: this.aimPitch,
       steeringAngle: this.controller.sim.steeringAngle,
+      driveDemand: this.controller.sim.driveDemand,
     };
   }
 

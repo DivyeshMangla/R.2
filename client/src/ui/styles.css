@@ -230,3 +230,17 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #ece6d8; col
   .hud *, .overlay * { animation: none !important; transition: none !important; }
   .kill-banner.show { opacity: 1; }
 }
+
+/* Mechanical driving feedback: speed and the vehicle nose stay legible while aiming. */
+.drive-feedback { position: absolute; left: 24px; bottom: 192px; width: 178px; padding: 9px 12px 10px; border-left: 5px solid #bd6d3a; }
+.drive-speed-row { display: flex; align-items: baseline; gap: 6px; }
+.drive-speed { font: 700 37px/.95 var(--display); font-variant-numeric: tabular-nums; min-width: 37px; }
+.drive-speed-row > small { font-size: 10px; color: var(--muted); font-weight: 700; }
+.drive-heading { display: inline-block; margin: 0 0 0 auto; color: #626e48; font-size: 20px; line-height: 1; transform-origin: 50% 50%; }
+.drive-mode { font: 700 11px/1.3 var(--font); letter-spacing: .15em; color: #566441; margin-top: 5px; }
+.drive-feedback[data-mode=braking] .drive-mode { color: #a0442e; }
+.drive-feedback[data-mode=reverse] .drive-mode { color: #795138; }
+.drive-feedback[data-mode=boost] .drive-mode { color: #315b72; }
+.drive-tip { display: block; font-size: 9px; line-height: 1.3; color: var(--muted); font-weight: 600; margin-top: 4px; }
+@media (max-width: 900px) { .drive-feedback { left: 16px; bottom: 184px; width: 166px; } }
+@media (max-width: 640px) { .drive-feedback { left: auto; right: 16px; bottom: 158px; width: 105px; padding: 8px; border-left-width: 3px; } .drive-speed { font-size: 28px; min-width: 26px; } .drive-speed-row { gap: 4px; } .drive-speed-row > small { font-size: 8px; } .drive-heading { font-size: 15px; } .drive-mode { font-size: 9px; letter-spacing: .08em; } .drive-tip { display: none; } }

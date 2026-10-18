@@ -74,6 +74,10 @@ export class UI {
   private readonly netInfo: HTMLDivElement;
   private readonly weaponHud: HTMLDivElement;
   private readonly pickupPrompt: HTMLDivElement;
+  private readonly driveFeedback: HTMLDivElement;
+  private readonly driveSpeed: HTMLSpanElement;
+  private readonly driveMode: HTMLDivElement;
+  private readonly driveHeading: HTMLSpanElement;
   private readonly mapName: HTMLDivElement;
   private readonly biomeLabel: HTMLDivElement;
   private weaponLabel = '';
@@ -106,7 +110,7 @@ export class UI {
 
     const folio = el('div', 'map-folio panel', this.hud);
     el('span', 'folio-mark', folio, '✧');
-    el('small', 'folio-eyebrow', folio, 'THE EXPEDITION ATLAS');
+    el('small', 'folio-eyebrow', folio, 'SCRAP SKIRMISH / LIVE ARENA');
     this.mapName = el('div', 'folio-name', folio);
     this.biomeLabel = el('div', 'folio-biome', folio);
 
@@ -142,6 +146,14 @@ export class UI {
     this.netInfo = el('div', 'net-info', this.hud);
     this.weaponHud = el('div', 'weapon-hud', this.hud);
     this.pickupPrompt = el('div', 'pickup-prompt', this.hud);
+    this.driveFeedback = el('div', 'drive-feedback panel', this.hud);
+    const speedRow = el('div', 'drive-speed-row', this.driveFeedback);
+    this.driveSpeed = el('span', 'drive-speed', speedRow, '0');
+    el('small', '', speedRow, 'KM/H');
+    this.driveHeading = el('span', 'drive-heading', speedRow, '▲');
+    this.driveHeading.title = 'Chassis direction relative to your view';
+    this.driveMode = el('div', 'drive-mode', this.driveFeedback, 'READY');
+    el('small', 'drive-tip', this.driveFeedback, 'C recenter · RMB hold view');
     const arcs = el('div', 'hit-indicator', this.hud);
     for (let i = 0; i < 4; i++) this.hitArcs.push({ node: el('div', 'hit-arc', arcs), t: 0 });
     this.killBanner = el('div', 'kill-banner', this.hud);
@@ -167,8 +179,10 @@ export class UI {
     this.splashStatus = el('div', 'status', box, 'Connecting…');
     const controls = el('div', 'controls', box);
     const rows: [string, string][] = [
-      ['<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>', 'Drive'],
+      ['<kbd>W</kbd> / <kbd>S</kbd>', 'Accelerate / brake then reverse'],
+      ['<kbd>A</kbd> / <kbd>D</kbd>', 'Steer the front wheels'],
       ['<kbd>Mouse</kbd>', 'Aim turret'],
+      ['<kbd>RMB</kbd> / <kbd>C</kbd>', 'Hold view / recenter behind robot'],
       ['<kbd>LMB</kbd>', 'Fire cannon'],
       ['<kbd>Shift</kbd>', 'Boost'],
       ['<kbd>Space</kbd>', 'Ability (from power-ups)'],
@@ -222,6 +236,18 @@ export class UI {
 
   setPickupPrompt(text: string): void {
     if (this.pickupPrompt.textContent !== text) this.pickupPrompt.textContent = text;
+  }
+
+  setDriving(forwardSpeed: number, throttle: number, relativeYaw: number, grounded: boolean, boosting: boolean, alive: boolean): void {
+    const speed = Number.isFinite(forwardSpeed) ? forwardSpeed : 0;
+    this.driveSpeed.textContent = String(Math.round(Math.abs(speed) * 3.6));
+    const mode = !alive ? 'OFFLINE' : !grounded ? 'AIRBORNE' : throttle * speed < -0.6 ? 'BRAKING'
+      : speed < -0.5 ? 'REVERSE' : boosting ? 'BOOST' : Math.abs(speed) < 0.5 ? 'READY'
+      : Math.abs(throttle) < 0.05 ? 'COAST' : 'DRIVE';
+    if (this.driveMode.textContent !== mode) this.driveMode.textContent = mode;
+    this.driveFeedback.dataset.mode = mode.toLowerCase();
+    const angle = Number.isFinite(relativeYaw) ? Math.atan2(Math.sin(relativeYaw), Math.cos(relativeYaw)) : 0;
+    this.driveHeading.style.transform = `rotate(${angle}rad)`;
   }
 
   setStatus(text: string, error = false): void {

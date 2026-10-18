@@ -36,6 +36,8 @@ export class RobotVisual {
   aimPitch = 0;
   barrelPitch = 0;
   steerInput = 0;
+  /** Authoritative front-wheel angle for remote visuals; local wheels use telemetry. */
+  steeringAngle = 0;
   flags = 0;
   hp = 100;
   maxHp = 100;
@@ -54,6 +56,9 @@ export class RobotVisual {
   private leanPitchVel = 0;
   private leanRollVel = 0;
   private readonly prevLocalVel = new THREE.Vector3();
+  private readonly prevWorldVel = new THREE.Vector3();
+  private longitudinalAccel = 0;
+  private lateralAccel = 0;
   private hasPrevVel = false;
   readonly leanQuat = new THREE.Quaternion();
 
@@ -111,6 +116,7 @@ export class RobotVisual {
   /** Teleports reset anything that integrates over time. */
   resetMotion(): void {
     this.hasPrevVel = false;
+    this.longitudinalAccel = this.lateralAccel = 0;
     this.leanPitch = this.leanRoll = this.leanPitchVel = this.leanRollVel = 0;
     this.squash = this.squashVel = 0;
     this.airTime = 0;
@@ -135,24 +141,35 @@ export class RobotVisual {
     // Barrel pitch follows the aim with a 25 ms time constant (~95% within 75 ms).
     this.barrelPitch += (this.aimPitch - this.barrelPitch) * (1 - Math.exp(-dt / 0.025));
 
-    // Local-frame acceleration → target lean (nose dips under braking, body rolls out of turns).
+    // Differentiate in world space FIRST. Differentiating local velocity erases
+    // centripetal acceleration during a steady corner, making the chassis rigid.
     _invQ.copy(this.quaternion).invert();
     _localV.copy(this.velocity).applyQuaternion(_invQ);
     let targetPitch = 0;
     let targetRoll = 0;
     if (this.hasPrevVel) {
-      _accel.copy(_localV).sub(this.prevLocalVel).divideScalar(dt);
-      targetPitch = THREE.MathUtils.clamp(_accel.z * 0.0045, -0.09, 0.09) * leanStrength;
-      targetRoll = THREE.MathUtils.clamp(-_accel.x * 0.006, -0.11, 0.11) * leanStrength;
+      _accel.copy(this.velocity).sub(this.prevWorldVel).divideScalar(dt).applyQuaternion(_invQ);
+      const response = 1 - Math.exp(-dt * 9);
+      this.longitudinalAccel += (THREE.MathUtils.clamp(_accel.z, -16, 16) - this.longitudinalAccel) * response;
+      this.lateralAccel += (THREE.MathUtils.clamp(_accel.x, -14, 14) - this.lateralAccel) * response;
+      const supported = this.hasTelemetry ? this.wheelContact.some(Boolean) : Math.abs(this.velocity.y) < 1.5;
+      if (supported) {
+        // +X pitch lowers the +Z nose. Accelerating lifts it; braking dips it.
+        targetPitch = THREE.MathUtils.clamp(-this.longitudinalAccel * 0.0075, -0.075, 0.075) * leanStrength;
+        targetRoll = THREE.MathUtils.clamp(this.lateralAccel * 0.009, -0.09, 0.09) * leanStrength;
+      }
     }
     this.prevLocalVel.copy(_localV);
+    this.prevWorldVel.copy(this.velocity);
     this.hasPrevVel = true;
-    // Damped springs (stiff, slightly underdamped for a weighty wobble).
-    const k = 120, c = 13;
-    this.leanPitchVel += ((targetPitch - this.leanPitch) * k - this.leanPitchVel * c) * dt;
-    this.leanRollVel += ((targetRoll - this.leanRoll) * k - this.leanRollVel * c) * dt;
-    this.leanPitch += this.leanPitchVel * dt;
-    this.leanRoll += this.leanRollVel * dt;
+    // Settle like a sprung body, with stable integration during a slow frame.
+    const steps = Math.max(1, Math.ceil(dt * 120)), step = dt / steps;
+    for (let i = 0; i < steps; i++) {
+      this.leanPitchVel += ((targetPitch - this.leanPitch) * 95 - this.leanPitchVel * 17) * step;
+      this.leanRollVel += ((targetRoll - this.leanRoll) * 85 - this.leanRollVel * 15) * step;
+      this.leanPitch += this.leanPitchVel * step;
+      this.leanRoll += this.leanRollVel * step;
+    }
     this.leanQuat.setFromEuler(_euler.set(this.leanPitch, 0, this.leanRoll));
 
     // Landing detection.
@@ -178,13 +195,12 @@ export class RobotVisual {
     this.recoil = Math.max(this.recoil, -0.28);
     this.heat = Math.max(0, this.heat - dt * 0.22);
 
-    // Wheels for robots without telemetry (remote): integrate spin, approximate steer.
+    // Remote wheels use the same speed-limited angle as the authoritative chassis.
     if (!this.hasTelemetry) {
       const fwdSpeed = _localV.z;
-      const maxSteer = cfg.maxSteerAngle / (1 + Math.abs(fwdSpeed) * cfg.steerSpeedFalloff);
       for (let i = 0; i < 4; i++) {
         this.wheelSpin[i] += (fwdSpeed / cfg.wheelRadius) * dt;
-        this.wheelSteer[i] = i < 2 ? -this.steerInput * maxSteer : 0;
+        this.wheelSteer[i] = i < 2 ? this.steeringAngle : 0;
         this.wheelSuspension[i] = cfg.suspensionRestLength - 0.06;
       }
     }

@@ -21,6 +21,11 @@ export class InputManager {
 
   private readonly keys = new Set<string>();
   private mouseDown = false;
+  private steadyCamera = false;
+  private recenterRequested = false;
+  private lastMouseAt = -Infinity;
+  private lastFireAt = -Infinity;
+  private lookSerial = 0;
   /** A click that started and ended between two ticks still fires once. */
   private fireLatched = false;
   private seq = 0;
@@ -42,6 +47,29 @@ export class InputManager {
 
   get isLocked(): boolean {
     return this.locked;
+  }
+
+  /** Only genuine pointer motion takes camera ownership away from chase. */
+  get mouseIdleSeconds(): number {
+    return Math.max(0, (performance.now() - this.lastMouseAt) / 1000);
+  }
+
+  get mouseSerial(): number {
+    return this.lookSerial;
+  }
+
+  get isFiring(): boolean {
+    return this.mouseDown || this.fireLatched || performance.now() - this.lastFireAt < 200;
+  }
+
+  get isSteadyCamera(): boolean {
+    return this.steadyCamera;
+  }
+
+  consumeRecenter(): boolean {
+    const requested = this.recenterRequested;
+    this.recenterRequested = false;
+    return requested;
   }
 
   requestLock(): void {
@@ -75,14 +103,18 @@ export class InputManager {
   resetAim(yaw: number): void {
     this.viewYaw = yaw;
     this.viewPitch = -0.12;
+    this.recenterRequested = false;
+    this.lastMouseAt = performance.now();
+    this.lookSerial += 1;
   }
 
   private readonly onKeyDown = (e: KeyboardEvent): void => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement || e.target instanceof HTMLTextAreaElement) return;
     if (e.target instanceof HTMLElement && (e.target.isContentEditable || e.target.closest('.garage'))) return;
     if (this.locked && (e.code === 'Tab' || e.code === 'Space')) e.preventDefault();
+    if (this.locked && e.code === 'KeyC' && !e.repeat) this.recenterRequested = true;
     if (!e.repeat) for (const h of this.keyHandlers) h(e.code, e);
-    this.keys.add(e.code);
+    if (this.locked) this.keys.add(e.code);
   };
 
   private readonly onKeyUp = (e: KeyboardEvent): void => {
@@ -93,21 +125,34 @@ export class InputManager {
     this.keys.clear();
     this.mouseDown = false;
     this.fireLatched = false;
+    this.lastFireAt = -Infinity;
+    this.steadyCamera = false;
+    this.recenterRequested = false;
   };
 
   private readonly onMouseDown = (e: MouseEvent): void => {
     if (e.button === 0 && this.locked) {
       this.mouseDown = true;
       this.fireLatched = true;
+      this.lastFireAt = performance.now();
     }
+    if (e.button === 2 && this.locked) this.steadyCamera = true;
   };
 
   private readonly onMouseUp = (e: MouseEvent): void => {
-    if (e.button === 0) this.mouseDown = false;
+    if (e.button === 0) {
+      if (this.mouseDown) this.lastFireAt = performance.now();
+      this.mouseDown = false;
+    }
+    if (e.button === 2) this.steadyCamera = false;
   };
 
   private readonly onMouseMove = (e: MouseEvent): void => {
     if (!this.locked) return;
+    if (e.movementX !== 0 || e.movementY !== 0) {
+      this.lastMouseAt = performance.now();
+      this.lookSerial += 1;
+    }
     const s = this.settings.mouseSensitivity;
     // Mouse right turns the view right, which is negative yaw (see shared/math.ts).
     this.viewYaw -= e.movementX * s;
@@ -119,6 +164,6 @@ export class InputManager {
 
   private readonly onLockChange = (): void => {
     this.locked = document.pointerLockElement === this.element;
-    if (!this.locked) this.mouseDown = false;
+    if (!this.locked) this.onBlur();
   };
 }

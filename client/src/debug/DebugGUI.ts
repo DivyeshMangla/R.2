@@ -12,7 +12,7 @@ import type { NetSimSettings } from '../net/NetClient';
 const PHYSICS_GROUPS: Record<string, PhysicsConfigKey[]> = {
   World: ['gravity'],
   Chassis: ['chassisMass', 'centerOfMassY', 'linearDamping', 'angularDamping', 'chassisFriction', 'chassisRestitution'],
-  Drivetrain: ['engineForce', 'reverseFactor', 'maxSpeed', 'brakeForce', 'rollingBrake', 'maxSteerAngle', 'steerSpeedFalloff', 'steerResponse', 'downforce'],
+  Drivetrain: ['engineForce', 'reverseFactor', 'maxSpeed', 'brakeForce', 'rollingBrake', 'maxSteerAngle', 'steerSpeedFalloff', 'steerResponse', 'steerReturnResponse', 'throttleResponse', 'maxLateralAcceleration', 'lateralDamping', 'downforce'],
   'Suspension & Tyres': [
     'suspensionRestLength',
     'suspensionStiffness',

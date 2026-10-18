@@ -11,6 +11,7 @@
     "test:lobby": "tsx src/test/lobbyHarness.ts",
     "test:bots": "node --import tsx src/test/botHarness.ts",
     "test:maps": "node --import tsx src/test/mapHarness.ts",
+    "test:camera": "node --import tsx src/test/cameraHarness.ts",
     "test:network": "tsx src/test/networkHarness.ts"
   },
   "dependencies": {

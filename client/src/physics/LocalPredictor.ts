@@ -70,6 +70,7 @@ export class LocalPredictor {
     this.controller = new RobotController(this.physics.world, state.p, 0);
     this.controller.setState(state);
     this.controller.sim.steeringAngle = state.steeringAngle;
+    this.controller.sim.driveDemand = state.driveDemand;
     this.physics.registerLocal(this.controller.collider, robotId);
     this.spawnCount = state.spawnCount;
     this.capture(true);
@@ -142,6 +143,7 @@ export class LocalPredictor {
     c.sim.dashCooldown = server.dashCooldown;
     c.sim.flipTimer = server.flipTimer;
     c.sim.steeringAngle = server.steeringAngle;
+    c.sim.driveDemand = server.driveDemand;
 
     // The world also contains kinematic proxies; stepping it re-simulates contacts against them.
     for (const f of this.pending) {

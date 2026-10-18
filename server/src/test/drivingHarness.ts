@@ -150,6 +150,10 @@ async function main(): Promise<void> {
   check(physicsConfig.gravity > 0 && physicsConfig.chassisMass > 0 && physicsConfig.maxSpeed > 0 && physicsConfig.engineForce > 0, 'Gravity, mass, speed, and engine force must be positive');
   if (failures.length > 0) throw new Error(failures.join('; '));
   const cap = physicsConfig.maxSpeed;
+  // Preserve the response targets as cruising speed changes: stopping distance
+  // scales with speed at equal stopping time, corner radius with speed squared
+  // at the same lateral-acceleration limit.
+  const speedRatio = cap / 12;
   // Allow a small one-tick overshoot without allowing a broken speed limiter.
   const tolerance = Math.max(0.6, cap * 0.06);
   const results: Result[] = [];
@@ -174,11 +178,17 @@ async function main(): Promise<void> {
       const maxSpeed = extrema(t, (s) => s.speed);
       const forwardDistance = t.end.state.p.z - t.start.state.p.z;
       const coast = f.run(3, IDLE);
+      const first90 = t.samples.findIndex((s) => s.forwardSpeed >= cap * 0.9);
+      const accelerationTime = first90 < 0 ? t.duration : (first90 + 1) * FIXED_DT;
+      const coastRetained = coast.end.speed / coast.start.speed;
       check(forwardDistance > cap * 2 && t.end.forwardSpeed > cap * 0.7, 'Forward input should move forward and reach normal driving speed');
       check(maxSpeed <= cap + tolerance, 'Forward driving exceeded the configured normal speed cap');
       check(coast.end.speed < coast.start.speed * 0.8, 'Releasing throttle should noticeably slow the robot');
       check(extrema(coast, (s) => s.speed) <= coast.start.speed + 0.3, 'Coasting should not accelerate the robot');
-      return { forwardDistance, endSpeed: t.end.forwardSpeed, maxSpeed, coastEndSpeed: coast.end.speed, coastDistance: coast.end.state.p.z - coast.start.state.p.z };
+      check(accelerationTime >= 3 && accelerationTime <= 4, '0–90% acceleration should build in 3–4 seconds');
+      check(coastRetained >= 0.45 && coastRetained <= 0.65, 'Coasting should retain 45–65% of speed after three seconds');
+      check(f.robot.sim.driveDemand === 0, 'Releasing the throttle should remove stored propulsion');
+      return { forwardDistance, endSpeed: t.end.forwardSpeed, maxSpeed, accelerationTime, coastRetained, coastEndSpeed: coast.end.speed, coastDistance: coast.end.state.p.z - coast.start.state.p.z };
     } finally { f.dispose(); }
   }));
 
@@ -193,6 +203,7 @@ async function main(): Promise<void> {
       const reverseSpeed = -t.end.forwardSpeed;
       check(t.start.forwardSpeed > cap * 0.6, 'Braking test must begin with forward motion');
       check(stopTime < 3.5 && stopDistance < cap * 2, 'Opposite input should brake to a stop promptly');
+      check(stopTime >= 1.2 && stopTime <= 1.7 && stopDistance >= 7 * speedRatio && stopDistance <= 11 * speedRatio, 'Braking should retain its stopping time and speed-scaled distance');
       check(reverseSpeed > cap * 0.2 && reverseSpeed < cap * 0.7 + tolerance, 'Holding reverse after braking should produce controlled reverse motion');
       return { initialSpeed: t.start.forwardSpeed, stopTime, stopDistance, reverseSpeed };
     } finally { f.dispose(); }
@@ -232,10 +243,63 @@ async function main(): Promise<void> {
       const minUp = extrema(t, (s) => s.upY, 'min');
       const maxHeight = extrema(t, (s) => s.state.p.y);
       const maxAngularSpeed = extrema(t, (s) => s.angularSpeed);
+      const steady = t.samples.slice(Math.round(2 / FIXED_DT));
+      const turnRadius = steady.reduce((sum, s) => sum + s.speed / Math.max(0.01, Math.abs(s.state.w.y)), 0) / steady.length;
       check(yawChange < -0.5, 'Right steering while driving forward should turn right');
       check(minUp > 0.4 && maxHeight < 2.5 && maxAngularSpeed < 10, 'Full steering on flat ground should remain upright and stable');
       check(extrema(t, (s) => s.speed) <= cap + tolerance, 'Turning should respect the normal speed cap');
-      return { yawChange, minUp, maxHeight, maxAngularSpeed, endSpeed: t.end.speed };
+      check(turnRadius >= 16 * speedRatio ** 2 && turnRadius <= 21 * speedRatio ** 2, 'Full-speed corner radius should preserve the lateral-acceleration envelope');
+      return { yawChange, minUp, maxHeight, maxAngularSpeed, turnRadius, endSpeed: t.end.speed };
+    } finally { f.dispose(); }
+  }));
+
+  results.push(scenario('parking lock and low-speed U-turn', () => {
+    const f = settledFixture();
+    try {
+      f.run(0.6, { ...IDLE, steer: 1 });
+      const parkingLockDeg = Math.abs(f.robot.sim.steeringAngle) * 180 / Math.PI;
+      check(parkingLockDeg >= 32 && parkingLockDeg <= 36, 'Parking lock should be 32–36 degrees');
+      const t = f.run(6, (s) => ({ ...FORWARD, steer: 1, throttle: Math.max(0.05, Math.min(1, (3 - s.speed) * 0.8)) }));
+      const steady = t.samples.slice(Math.round(3 / FIXED_DT));
+      const speed = steady.reduce((sum, s) => sum + s.speed, 0) / steady.length;
+      const radius = steady.reduce((sum, s) => sum + s.speed / Math.max(0.01, Math.abs(s.state.w.y)), 0) / steady.length;
+      check(speed > 1.5 && speed < 3.5 && radius > 1.5 && radius < 5, 'Low-speed manoeuvring should make a tight physical U-turn');
+      check(extrema(t, (s) => s.upY, 'min') > 0.9, 'Low-speed U-turn should remain stable');
+      return { parkingLockDeg, speed, radius };
+    } finally { f.dispose(); }
+  }));
+
+  results.push(scenario('brake priority and propulsion spool', () => {
+    const f = settledFixture();
+    try {
+      f.run(FIXED_DT, FORWARD);
+      const firstDemand = f.robot.sim.driveDemand;
+      f.run(6, FORWARD);
+      f.run(FIXED_DT, REVERSE);
+      const brakeDemand = f.robot.sim.driveDemand;
+      check(firstDemand > 0 && firstDemand < 0.2, 'First throttle tick should ramp propulsion instead of applying full torque');
+      check(brakeDemand === 0, 'Opposite input must clear propulsion immediately while braking');
+      f.run(2, REVERSE);
+      const reverseDemand = f.robot.sim.driveDemand;
+      check(reverseDemand < -0.75 && f.sample().forwardSpeed < -0.6, 'Brake should transition cleanly into reverse after stopping');
+      f.robot.teleport({ x: 0, y: 1.4, z: 0 }, 0);
+      check(f.robot.sim.driveDemand === 0 && f.robot.sim.steeringAngle === 0, 'Teleport should clear both drivetrain filter states');
+      return { firstDemand, brakeDemand, reverseDemand };
+    } finally { f.dispose(); }
+  }));
+
+  results.push(scenario('airborne momentum preserved', () => {
+    const f = fixture({ x: 0, y: 10, z: 0 });
+    try {
+      f.robot.body.setLinvel({ x: 4, y: 3, z: 7 }, true);
+      f.robot.body.setAngvel({ x: 0.3, y: 0.8, z: -0.2 }, true);
+      const before = f.robot.getState();
+      const result = f.robot.drive({ ...IDLE, steer: 1 }, FIXED_DT, false);
+      const after = f.robot.getState();
+      const linearChange = Math.hypot(after.v.x - before.v.x, after.v.y - before.v.y, after.v.z - before.v.z);
+      const angularChange = Math.hypot(after.w.x - before.w.x, after.w.y - before.w.y, after.w.z - before.w.z);
+      check(!result.grounded && linearChange < 0.00001 && angularChange < 0.00001, 'Grounded assists must not change airborne momentum or heading');
+      return { grounded: result.grounded, linearChange, angularChange };
     } finally { f.dispose(); }
   }));
 
@@ -257,6 +321,31 @@ async function main(): Promise<void> {
     } finally { f.dispose(); }
   }));
 
+  results.push(scenario('steering attack and return timing', () => {
+    const f = settledFixture();
+    try {
+      f.run(0.6, { ...IDLE, steer: 1 });
+      const fullAngle = Math.abs(f.robot.sim.steeringAngle);
+      f.run(0.6, IDLE);
+      let attackTicks = 0;
+      while (Math.abs(f.robot.sim.steeringAngle) < fullAngle * 0.9 && attackTicks < 60) {
+        f.run(FIXED_DT, { ...IDLE, steer: 1 });
+        attackTicks++;
+      }
+      f.run(0.6, { ...IDLE, steer: 1 });
+      let returnTicks = 0;
+      while (Math.abs(f.robot.sim.steeringAngle) > fullAngle * 0.1 && returnTicks < 60) {
+        f.run(FIXED_DT, IDLE);
+        returnTicks++;
+      }
+      const attackTime = attackTicks * FIXED_DT;
+      const returnTime = returnTicks * FIXED_DT;
+      check(attackTime >= 0.12 && attackTime <= 0.18, 'Steering should reach 90% lock in 120–180ms');
+      check(returnTime >= 0.08 && returnTime <= 0.12, 'Steering should return 90% to centre in 80–120ms');
+      return { attackTime, returnTime };
+    } finally { f.dispose(); }
+  }));
+
   results.push(scenario('steering snapshot and prediction replay', () => {
     const f = settledFixture({ x: -35, y: 1.4, z: -20 });
     const clientPhysics = new ClientPhysicsWorld();
@@ -268,11 +357,15 @@ async function main(): Promise<void> {
       const wire = encodeRobot(serverRobot.toNetState());
       const snapshot = decodeRobot(wire);
       const wireAngleError = Math.abs(snapshot.steeringAngle - f.robot.sim.steeringAngle);
+      const wireDemandError = Math.abs(snapshot.driveDemand - f.robot.sim.driveDemand);
       check(wireAngleError <= 0.000051, 'Robot snapshot should preserve the smoothed steering angle');
+      check(wireDemandError <= 0.000051, 'Robot snapshot should preserve the propulsion spool');
       check(decodeRobot(wire.slice(0, 28)).steeringAngle === 0, 'Snapshots without the new steering field should remain readable');
+      check(decodeRobot(wire.slice(0, 29)).driveDemand === 0, 'Snapshots without the propulsion spool should remain readable');
       predictor.ensure(1, snapshot);
       const restoredOnCreate = predictor.controller!.sim.steeringAngle;
       check(restoredOnCreate === snapshot.steeringAngle, 'Creating the local predictor should restore server steering');
+      check(predictor.controller!.sim.driveDemand === snapshot.driveDemand, 'Creating the local predictor should restore server propulsion');
       for (let seq = 1; seq <= 12; seq++) {
         predictor.applyInput({ seq, throttle: 1, steer: seq < 9 ? 1 : -1, aimYaw: 0, aimPitch: 0, buttons: 0, viewT: 0 }, FIXED_DT);
         clientPhysics.step();
@@ -280,16 +373,21 @@ async function main(): Promise<void> {
       }
       const expected = predictor.controller!.getState();
       const expectedAngle = predictor.controller!.sim.steeringAngle;
+      const expectedDemand = predictor.controller!.sim.driveDemand;
       // Force a stale local angle and pose; reconcile must restore the snapshot
       // and replay the same pending inputs, rather than reuse that stale state.
       predictor.controller!.sim.steeringAngle = physicsConfig.maxSteerAngle;
+      predictor.controller!.sim.driveDemand = -1;
       predictor.controller!.body.setTranslation({ ...expected.p, x: expected.p.x + 1 }, true);
       predictor.reconcile(snapshot, FIXED_DT);
       const actual = predictor.controller!.getState();
       const replayPositionError = Math.hypot(actual.p.x - expected.p.x, actual.p.y - expected.p.y, actual.p.z - expected.p.z);
       const replayAngleError = Math.abs(predictor.controller!.sim.steeringAngle - expectedAngle);
-      check(predictor.stats.replayed === 12 && replayPositionError < 0.05 && replayAngleError < 0.001, 'Reconciliation should reproduce the pending steering inputs from authoritative state');
-      return { wireAngleError, restoredOnCreate, replayPositionError, replayAngleError, replayedInputs: predictor.stats.replayed };
+      const replayDemandError = Math.abs(predictor.controller!.sim.driveDemand - expectedDemand);
+      // Velocity on the wire is quantized to centimetres per second; the
+      // speed-sensitive steering curve magnifies that into a small angle error.
+      check(predictor.stats.replayed === 12 && replayPositionError < 0.05 && replayAngleError < 0.003 && replayDemandError < 0.0001, 'Reconciliation should reproduce pending steering and propulsion from authoritative state');
+      return { wireAngleError, wireDemandError, restoredOnCreate, replayPositionError, replayAngleError, replayDemandError, replayedInputs: predictor.stats.replayed };
     } finally { predictor.destroy(); clientPhysics.world.free(); f.dispose(); }
   }));
 
