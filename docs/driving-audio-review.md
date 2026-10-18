@@ -21,7 +21,7 @@ The key diagnosis was a mismatch between chassis steering and an orbit camera th
 
 ## Acceptance targets
 
-Keep the existing 12 m/s normal and 15 m/s boost limits. The driving harness confirms the selected targets:
+The original review used 12 m/s normal and 15 m/s boost limits. The driving harness confirmed these baseline targets:
 
 | Measurement | Target | Measured |
 | --- | --- | --- |
@@ -35,3 +35,9 @@ Keep the existing 12 m/s normal and 15 m/s boost limits. The driving harness con
 Implementation review also removed a second world-position camera spring that lagged several metres behind a moving chassis. Normal driving now uses the shared orbit directly, with filtered lookahead, boom length, FOV and collision release; the death camera retains its spring.
 
 Tests must also cover reverse, slalom, airborne behavior, ramps, old snapshot decoding, restoration/replay of propulsion state, camera ownership and wraparound, audio gear hysteresis, idle/slip gating, inactivity fades, and bounded one-shot allocation. Browser listening and a real driving playtest remain necessary to judge the final subjective result.
+
+## Higher-speed follow-up
+
+The requested speed increase raises normal speed to **16 m/s (57.6 km/h)** and boost to **20 m/s (72 km/h)**. Engine force is 1,850 N; braking and rolling resistance scale with the higher cruising speed to preserve the response. The lateral-acceleration envelope stays constant, so full-speed corners naturally require more room.
+
+The updated driving harness passes: 0–90% in **3.23 s**, braking in **1.45 s / 10.07 m**, **60.7%** speed retained after three seconds coasting, **31.27 m** full-speed turn radius, and **3.61 m** low-speed radius. Steering timing, boost, dash, airborne momentum, ramps and prediction replay also pass. Distance and corner-radius checks scale with cruising speed rather than retaining the old 12 m/s distances.
