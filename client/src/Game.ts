@@ -15,6 +15,7 @@ import {
   makeAimSolution,
   makeEnvHit,
   makeHitTarget,
+  MATCH_DURATION_S,
   MatchPhase,
   MAX_PLAYERS,
   physicsConfig,
@@ -210,6 +211,10 @@ export class Game {
     document.addEventListener('visibilitychange', () => { if (document.hidden) this.audio.setActive(false); });
   }
 
+  /** Last countdown digit shown (0 = none); `goUntil` keeps "GO!" up briefly once the match begins. */
+  private countdownShown = 0;
+  private goUntil = 0;
+
   async start(): Promise<void> {
     this.ui.setSplashVisible(false);
     this.ui.setHudVisible(false);
@@ -224,6 +229,8 @@ export class Game {
     this.myWeaponId = null;
     let joined = false;
     this.audio.unlock();
+    // Lock now, while the Deploy click is still a user gesture; after the awaits below the browser refuses.
+    this.input.requestLock();
     this.lobby.setBusy(true, `Connecting to ${getMap(this.mapId).name}…`);
     try {
       await initPhysics();
@@ -391,6 +398,11 @@ export class Game {
     this.lastSnap = m;
     if (!this.fleet) return;
     const snap = this.buffer.push(m);
+    if (this.phase === MatchPhase.COUNTDOWN && m.phase === MatchPhase.PLAYING && this.started) {
+      this.goUntil = performance.now() + 900;
+      this.countdownShown = 0;
+      this.audio.countdown(true);
+    }
     this.phase = m.phase;
 
     for (const id of this.fleet.visuals.keys()) {
@@ -1201,7 +1213,7 @@ export class Game {
     if (this.lastSnap) {
       const elapsed = (this.net.serverNow() - this.lastSnap.t) / 1000;
       timeLeft = this.lastSnap.left - elapsed;
-      ui.setTimer(timeLeft, this.phase === MatchPhase.RESULTS);
+      ui.setTimer(this.phase === MatchPhase.COUNTDOWN ? MATCH_DURATION_S : timeLeft, this.phase === MatchPhase.RESULTS);
     }
     // Jumbotron: kill leader + match clock (redraws only when the text changes).
     this.leaderKills = -1;
@@ -1219,7 +1231,16 @@ export class Game {
     if (locked && this.menu.isOpen) this.menu.hide();
     this.wasLocked = locked;
 
-    if (me && !alive && this.phase === MatchPhase.PLAYING) {
+    if (this.started && this.connected && this.phase === MatchPhase.COUNTDOWN) {
+      const n = Math.min(3, Math.max(1, Math.ceil(timeLeft)));
+      if (n !== this.countdownShown) {
+        this.countdownShown = n;
+        this.audio.countdown(false);
+      }
+      ui.setCenterMessage(String(n), locked ? 'get ready' : 'click to lock the mouse', true);
+    } else if (this.started && performance.now() < this.goUntil) {
+      ui.setCenterMessage('GO!', '', true);
+    } else if (me && !alive && this.phase === MatchPhase.PLAYING) {
       const left = Math.max(0, (this.respawnAt - performance.now()) / 1000);
       ui.setCenterMessage('DESTROYED', `${this.killerName ? `by ${this.killerName} — ` : ''}respawning in ${left.toFixed(1)}s`);
     } else if (this.started && this.connected && !locked && !this.menu.isOpen && this.phase === MatchPhase.PLAYING) {

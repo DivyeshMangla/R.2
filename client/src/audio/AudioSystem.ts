@@ -338,6 +338,15 @@ export class AudioSystem {
     [392, 494, 587].forEach((f, i) => this.tone(dest, t + i * 0.09, f, f, 0.28, 0.28, 'triangle'));
   }
 
+  /** Match countdown: a short beep on 3/2/1, a higher, longer one on GO. */
+  countdown(go: boolean): void {
+    const dest = this.out(go ? 0.28 : 0.22, 0, 'countdown', 0.6, 2, 0.2, true);
+    if (!dest || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    const f = go ? 880 : 520;
+    this.tone(dest, t, f, f, go ? 0.45 : 0.16, 0.3, 'triangle');
+  }
+
   pick(): void {
     const dest = this.out(0.22, 0, 'pick', 0.4, 3, 0.08, true);
     if (!dest || !this.ctx) return;

@@ -182,6 +182,8 @@ export type MineWire = [number, number, number, number, number];
 export const MatchPhase = {
   PLAYING: 0,
   RESULTS: 1,
+  /** Everyone is frozen at their spawn while the 3-2-1 countdown runs. */
+  COUNTDOWN: 2,
 } as const;
 export type MatchPhaseValue = (typeof MatchPhase)[keyof typeof MatchPhase];
 

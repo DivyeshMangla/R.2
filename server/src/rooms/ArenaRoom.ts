@@ -68,6 +68,8 @@ export class ArenaRoom extends Room {
   override onJoin(client: Client, options?: JoinOptions): void {
     this.clientsBySession.set(client.sessionId, client);
     const robot = this.game.addHuman(client.sessionId, options?.name, options?.characterId, options?.weaponId);
+    // The first driver in starts a fresh match: bots stop warming up and everyone waits for 3-2-1.
+    if (this.game.humanCount() === 1) this.game.restartMatch();
     client.send(Msg.WELCOME, this.game.welcomeFor(robot));
     console.log(`[arena ${this.roomId}] ${robot.name} joined as robot #${robot.id} (${this.game.humanCount()} human)`);
   }

@@ -6,6 +6,7 @@ import {
   FIXED_DT,
   getArenaDefinition,
   getMap,
+  COUNTDOWN_S,
   MATCH_DURATION_S,
   MatchPhase,
   MAX_INPUT_QUEUE,
@@ -505,14 +506,18 @@ export class GameSimulation implements GameHost {
         .map((r) => ({ id: r.id, name: r.name, color: r.color, kills: r.kills, deaths: r.deaths, level: r.level }));
       const msg: ResultsMsg = { standings, duration: RESULTS_DURATION_S };
       this.net.broadcast(Msg.RESULTS, msg);
+    } else if (this.phase === MatchPhase.COUNTDOWN) {
+      this.phase = MatchPhase.PLAYING;
+      this.phaseTimeLeft = MATCH_DURATION_S;
     } else {
       this.restartMatch();
     }
   }
 
-  private restartMatch(): void {
-    this.phase = MatchPhase.PLAYING;
-    this.phaseTimeLeft = MATCH_DURATION_S;
+  /** Resets the arena and freezes everyone for the 3-2-1 countdown; the match clock starts when it ends. */
+  restartMatch(): void {
+    this.phase = MatchPhase.COUNTDOWN;
+    this.phaseTimeLeft = COUNTDOWN_S;
     this.weapons.clear();
     this.lag.clear();
     this.powerups.clear();

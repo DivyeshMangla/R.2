@@ -414,12 +414,18 @@ export class UI {
     this.killBannerT = 2.2;
   }
 
-  setCenterMessage(text: string, small = ''): void {
+  setCenterMessage(text: string, small = '', countdown = false): void {
     if (!text) {
       this.centerMsg.textContent = '';
+      this.centerMsg.classList.remove('countdown');
       return;
     }
+    const big = this.centerMsg.firstElementChild;
+    // Called every frame: only rebuild (and re-trigger the countdown pop) when the text changes.
+    if (big?.textContent === text && (this.centerMsg.querySelector('small')?.textContent ?? '') === small
+      && this.centerMsg.classList.contains('countdown') === countdown) return;
     this.centerMsg.innerHTML = '';
+    this.centerMsg.classList.toggle('countdown', countdown);
     el('div', '', this.centerMsg, text);
     if (small) el('small', '', this.centerMsg, small);
   }

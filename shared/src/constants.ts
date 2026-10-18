@@ -12,6 +12,8 @@ export const MAX_PLAYERS = 6;
 
 export const MATCH_DURATION_S = 300;
 export const RESULTS_DURATION_S = 10;
+/** Frozen "3, 2, 1" lead-in before every match (slightly over 3s so the client has time to load). */
+export const COUNTDOWN_S = 3.5;
 export const RESPAWN_DELAY_S = 3;
 export const SPAWN_PROTECTION_S = 6;
 
