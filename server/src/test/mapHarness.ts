@@ -124,7 +124,9 @@ async function main(): Promise<void> {
       assert.ok(outer.length >= 35, `${map.id} needs physical outer districts`);
       assert.ok(definition.pickups.length >= 12);
       assert.equal(new Set(definition.pickups.map((p) => p.id)).size, definition.pickups.length);
-      for (const weapon of WEAPONS) assert.ok(definition.pickups.some((p) => p.weaponId === weapon.id));
+      // Pads restock with random weapons, so a map only needs a varied starting spread.
+      assert.ok(new Set(definition.pickups.map((p) => p.weaponId)).size >= 12);
+      assert.ok(definition.pickups.every((p) => WEAPONS.some((weapon) => weapon.id === p.weaponId)));
       assert.equal(definition.spawns.length, 8);
       for (const block of definition.blocks) {
         if (block.kind === 'floor' || block.kind === 'barrier') continue;

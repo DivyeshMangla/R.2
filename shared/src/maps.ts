@@ -311,12 +311,12 @@ function expandDistricts(mapId: MapId, central: readonly ArenaBlock[]): readonly
 }
 
 function expeditionPads(central: readonly WeaponPad[]): readonly WeaponPad[] {
-  const starters: readonly WeaponId[] = ['pulse', 'scatter', 'repeater', 'rail'];
+  const starters: readonly WeaponId[] = ['pistol', 'shotgun', 'knuckles', 'darts', 'revolver', 'crossbow', 'spiked_bat', 'stun_pistol'];
   const nearSpawns = SPAWN_POINTS.map((spawn, index) => {
     const radius = Math.hypot(spawn.position.x, spawn.position.z);
     return pad(index, starters[index % starters.length], spawn.position.x * (radius - 10) / radius, spawn.position.z * (radius - 10) / radius);
   });
-  return [...nearSpawns, ...central, pad(0, 'pulse', 0, 43), pad(0, 'scatter', 43, 0), pad(0, 'rail', 0, -43), pad(0, 'repeater', -43, 0)]
+  return [...nearSpawns, ...central, pad(0, 'rpg', 0, 43), pad(0, 'ray_gun', 43, 0), pad(0, 'katana', 0, -43), pad(0, 'tesla_gun', -43, 0)]
     .map((entry, id) => ({ ...entry, id }));
 }
 
@@ -325,54 +325,54 @@ const ARENAS: Readonly<Record<MapId, ArenaDefinition>> = {
     blocks: expandDistricts('foundry', ARENA_BLOCKS),
     spawns: SPAWN_POINTS,
     pickups: expeditionPads([
-      pad(0, 'scatter', 0, 22), pad(1, 'pulse', 0, -22),
-      pad(2, 'rail', 22, 14), pad(3, 'rail', -22, -14),
-      pad(4, 'repeater', 30, -12), pad(5, 'repeater', -30, 12),
+      pad(0, 'molotov', 0, 22), pad(1, 'flintlock', 0, -22),
+      pad(2, 'firework', 22, 14), pad(3, 'torch', -22, -14),
+      pad(4, 'chainsaw', 30, -12), pad(5, 'storm_kunai', -30, 12),
     ]),
   },
   crossroads: {
     blocks: expandDistricts('crossroads', buildCrossroads()),
     spawns: buildCrossroadsSpawns(),
     pickups: expeditionPads([
-      pad(0, 'scatter', -9, 0), pad(1, 'scatter', 9, 0),
-      pad(2, 'rail', 0, -25), pad(3, 'pulse', 0, 25),
-      pad(4, 'repeater', -32, -22), pad(5, 'repeater', 32, 22),
+      pad(0, 'toxic_barrel', -9, 0), pad(1, 'cleaver', 9, 0),
+      pad(2, 'acid_vial', 0, -25), pad(3, 'crowbar', 0, 25),
+      pad(4, 'compound_bow', -32, -22), pad(5, 'twin_cannon', 32, 22),
     ]),
   },
   verdant: {
     blocks: expandDistricts('verdant', buildVerdant()),
     spawns: buildCrossroadsSpawns(),
     pickups: expeditionPads([
-      pad(0, 'scatter', -12, -10), pad(1, 'pulse', 12, 10),
-      pad(2, 'rail', -28, 17), pad(3, 'rail', 28, -17),
-      pad(4, 'repeater', 0, -27), pad(5, 'repeater', 0, 27),
+      pad(0, 'taser', -12, -10), pad(1, 'syringe', 12, 10),
+      pad(2, 'shield_canister', -28, 17), pad(3, 'fire_axe', 28, -17),
+      pad(4, 'blunderbuss', 0, -27), pad(5, 'ray_gun', 0, 27),
     ]),
   },
   dunes: {
     blocks: expandDistricts('dunes', buildDunes()),
     spawns: buildCrossroadsSpawns(),
     pickups: expeditionPads([
-      pad(0, 'scatter', 0, -15), pad(1, 'pulse', 0, 15),
-      pad(2, 'rail', -29, 8), pad(3, 'rail', 29, -8),
-      pad(4, 'repeater', -8, 28), pad(5, 'repeater', 8, -28),
+      pad(0, 'katana', 0, -15), pad(1, 'rpg', 0, 15),
+      pad(2, 'tesla_gun', -29, 8), pad(3, 'knuckles', 29, -8),
+      pad(4, 'spiked_bat', -8, 28), pad(5, 'darts', 8, -28),
     ]),
   },
   frost: {
     blocks: expandDistricts('frost', buildFrost()),
     spawns: buildCrossroadsSpawns(),
     pickups: expeditionPads([
-      pad(0, 'scatter', 0, 0), pad(1, 'pulse', -27, 0),
-      pad(2, 'rail', 27, 0), pad(3, 'rail', 0, -28),
-      pad(4, 'repeater', 0, 28), pad(5, 'repeater', -30, -28),
+      pad(0, 'molotov', 0, 0), pad(1, 'flintlock', -27, 0),
+      pad(2, 'firework', 27, 0), pad(3, 'torch', 0, -28),
+      pad(4, 'chainsaw', 0, 28), pad(5, 'storm_kunai', -30, -28),
     ]),
   },
   ruins: {
     blocks: expandDistricts('ruins', buildRuins()),
     spawns: buildCrossroadsSpawns(),
     pickups: expeditionPads([
-      pad(0, 'scatter', -21, 0), pad(1, 'pulse', 21, 0),
-      pad(2, 'rail', 0, -22), pad(3, 'rail', 0, 22),
-      pad(4, 'repeater', -28, 28), pad(5, 'repeater', 28, -28),
+      pad(0, 'toxic_barrel', -21, 0), pad(1, 'cleaver', 21, 0),
+      pad(2, 'acid_vial', 0, -22), pad(3, 'crowbar', 0, 22),
+      pad(4, 'compound_bow', -28, 28), pad(5, 'twin_cannon', 28, -28),
     ]),
   },
 };

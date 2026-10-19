@@ -209,6 +209,8 @@ export interface RobotMaterialSet {
   leech: THREE.MeshBasicMaterial;
   repair: THREE.MeshBasicMaterial;
   nozzle: THREE.MeshBasicMaterial;
+  /** Vertex-coloured held-weapon bodies (see WeaponModels). */
+  held: THREE.MeshStandardMaterial;
 }
 
 function baseMaterial(kind: RobotMaterialKind, maps: RobotSurfaceMaps, numbers: NumberAtlas): THREE.MeshStandardMaterial {
@@ -292,5 +294,6 @@ export function createRobotMaterials(data: RobotDataTexture, maps: RobotSurfaceM
     leech: new THREE.MeshBasicMaterial({ color: hdr(6, 0.3, 0.8) }),
     repair: new THREE.MeshBasicMaterial({ color: hdr(0.6, 5, 1.4) }),
     nozzle: new THREE.MeshBasicMaterial({ color: hdr(5, 1.8, 0.4) }),
+    held: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.72, metalness: 0.05, flatShading: true }),
   };
 }

@@ -21,6 +21,8 @@ export interface ProjectileState {
   assist: boolean;
   /** Distance travelled so far (m). */
   dist: number;
+  /** Per-shell gravity override (m/s^2); falls back to physicsConfig.projectileGravity. */
+  gravity?: number;
 }
 
 export interface EnvHit {
@@ -93,7 +95,7 @@ export function stepProjectile(world: ProjectileWorld, p: ProjectileState, dt: n
   out.envHandle = -1;
   p.age += dt;
   if (p.age > p.lifetime) return (out.kind = StepKind.EXPIRE);
-  p.vel.y -= cfg.projectileGravity * dt;
+  p.vel.y -= (p.gravity ?? cfg.projectileGravity) * dt;
   const speed = Math.hypot(p.vel.x, p.vel.y, p.vel.z);
   if (speed < 1e-4) return (out.kind = StepKind.EXPIRE);
   _dir.x = p.vel.x / speed;

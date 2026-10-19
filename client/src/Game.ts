@@ -41,6 +41,7 @@ import {
   type WelcomeMsg,
   type LobbySelection,
   type MapId,
+  type StatusEffect,
   type WeaponId,
 } from '@robot-arena/shared';
 import { AudioSystem } from './audio/AudioSystem';
@@ -67,7 +68,8 @@ import type { MineSample } from './render/vfx/MineRenderer';
 import { VFXSystem, type VFXStats } from './render/vfx/VFXSystem';
 import { DebugOverlay, type PerfSample } from './ui/DebugOverlay';
 import { SettingsMenu } from './ui/SettingsMenu';
-import { UI, type AbilityDisplay } from './ui/UI';
+import { UI, type AbilityDisplay, type KillWeapon } from './ui/UI';
+import { estimateDamage, fxSize, weaponIcon, weaponWeight } from './ui/weaponInfo';
 import { Lobby } from './ui/Lobby';
 import { WeaponPickupRenderer } from './render/WeaponPickupRenderer';
 
@@ -78,7 +80,46 @@ interface QueuedEvent {
 
 const IMMEDIATE_EVENTS = new Set<GameEvent['k']>(['tune', 'matchStart', 'levelup', 'powerup', 'heal', 'weapon']);
 const HITSTOP_S = 0.08;
+/** Server barrel offset per follow-up shot of a burst (WeaponSystem BURST_BARREL_STRIDE). */
+const BURST_BARREL_STRIDE = 100;
+/** Damage ticks below this are summed into one floating number instead of spamming. */
+const TICK_DAMAGE = 5;
+/** Weapons whose first volley is predicted locally (firework homing is server-only). */
+function predictsShells(weaponId: WeaponId | undefined): boolean {
+  if (!weaponId) return true;
+  const def = getWeapon(weaponId);
+  return (def.kind === 'projectile' || def.kind === 'lob') && def.homing <= 0;
+}
+const STATUS_LABEL: Record<StatusEffect, string> = { burn: 'BURNING', poison: 'POISONED', stun: 'STUNNED', slow: 'SLOWED' };
+
+/** A sustained weapon use (torch flame, chainsaw) drawn every frame until `until`. */
+interface ActiveUse {
+  id: number;
+  weaponId: WeaponId;
+  until: number;
+}
+
+/** Summed small damage ticks waiting to be shown as one number. */
+interface TickAccum {
+  amount: number;
+  since: number;
+  p: THREE.Vector3;
+  taken: boolean;
+}
 const HITSTOP_SCALE = 0.15;
+/** Own-kill slow motion: visuals run at SLOWMO_SCALE, easing back to full speed over SLOWMO_S. */
+const SLOWMO_S = 0.55;
+const SLOWMO_SCALE = 0.25;
+/** A hit older than this no longer earns the kill credit for its weapon. */
+const CREDIT_S = 8;
+
+/** Who / what last hurt a robot, for kill-feed weapon attribution. */
+interface KillCredit {
+  owner: number;
+  weaponId: WeaponId | null;
+  cause: string | null;
+  t: number;
+}
 
 const _pos = new THREE.Vector3();
 const _quat = new THREE.Quaternion();
@@ -88,7 +129,9 @@ const _v2 = new THREE.Vector3();
 const _dir = new THREE.Vector3();
 const _n = new THREE.Vector3();
 const _c = new THREE.Color();
+const _c2 = new THREE.Color();
 const BACK = new THREE.Vector3(0, 0, -1);
+const FORWARD = new THREE.Vector3(0, 0, 1);
 const UP = new THREE.Vector3(0, 1, 0);
 const RIGHT = new THREE.Vector3(1, 0, 0);
 const DOWN: Vec3 = { x: 0, y: -1, z: 0 };
@@ -152,6 +195,24 @@ export class Game {
   private ghost: THREE.Mesh | null = null;
   private cableTimer = 2;
   private netInfoTimer = 0;
+  private readonly activeUses: ActiveUse[] = [];
+  /** Last weapon use per robot (wall time), to pair `use` with later `teleport` / `shield` events. */
+  private readonly lastUse = new Map<number, { weaponId: WeaponId; t: number }>();
+  /** Our own non-projectile use was already drawn by local prediction at this time. */
+  private localUseAt = -10;
+  /** Weapon we optimistically spent on the trigger pull; stale roster echoes of it are ignored briefly. */
+  private optimisticSpent: { id: WeaponId; until: number } | null = null;
+  private lastDisarmAt = -10;
+  private readonly meleeFeedbackAt = new Map<string, number>();
+  private readonly tickDamage = new Map<number, TickAccum>();
+  /** Last weapon each robot fired / swung (the server's `kill` event carries none). */
+  private readonly ownerWeapon = new Map<number, WeaponId>();
+  /** Server projectile id -> weapon, so `impact` events can be credited. */
+  private readonly pidWeapon = new Map<number, WeaponId>();
+  /** Victim -> last damaging source. */
+  private readonly lastHit = new Map<number, KillCredit>();
+  private slowmo = 0;
+  private killerWeapon = '';
 
   /** Latest aim solution (screen-centre ray -> world point -> turret yaw/pitch). */
   private readonly aim = makeAimSolution();
@@ -408,6 +469,7 @@ export class Game {
     for (const id of this.fleet.visuals.keys()) {
       if (!snap.robots.has(id)) {
         this.fleet.remove(id);
+        this.vfx.weaponFx.remove(id);
         this.interp.delete(id);
         this.physics.removeProxy(id);
       }
@@ -464,7 +526,9 @@ export class Game {
       if (v) this.syncVisualInfo(v, p);
       if (p.id === this.myId) {
         this.myStats = computeStats(p.stacks);
-        this.myWeaponId = p.weaponId ?? null;
+        const spent = this.optimisticSpent;
+        const stale = spent && this.time < spent.until && p.weaponId === spent.id;
+        if (!stale) this.myWeaponId = p.weaponId ?? null;
         this.predictor?.setModifiers(this.modifiersFromStats());
       }
     }
@@ -474,9 +538,75 @@ export class Game {
   private onEvents(m: EventsMsg): void {
     if (!this.vfx) return;
     for (const e of m.e) {
+      // Credit is tracked on receipt (not render time) so it is ready when an immediate `kill` lands.
+      this.trackCredit(e);
       if (IMMEDIATE_EVENTS.has(e.k) || this.involvesMe(e)) this.handleEvent(e);
       else this.events.push({ t: m.t, e });
     }
+  }
+
+  private credit(victim: number, owner: number, weaponId: WeaponId | null, cause: string | null = null): void {
+    if (victim < 0 || owner < 0 || victim === owner) return;
+    this.lastHit.set(victim, { owner, weaponId, cause, t: this.time });
+  }
+
+  /** Remembers which weapon last hurt each robot, from every weapon-bearing event. */
+  private trackCredit(e: GameEvent): void {
+    switch (e.k) {
+      case 'shot':
+        if (e.weaponId) {
+          this.ownerWeapon.set(e.owner, e.weaponId);
+          this.pidWeapon.set(e.pid, e.weaponId);
+          if (this.pidWeapon.size > 600) this.pidWeapon.delete(this.pidWeapon.keys().next().value as number);
+        }
+        return;
+      case 'use':
+        this.ownerWeapon.set(e.id, e.weaponId);
+        return;
+      case 'beam':
+        this.ownerWeapon.set(e.owner, e.weaponId);
+        this.credit(e.target, e.owner, e.weaponId);
+        return;
+      case 'melee':
+        this.ownerWeapon.set(e.owner, e.weaponId);
+        this.credit(e.target, e.owner, e.weaponId);
+        return;
+      case 'explode':
+        this.ownerWeapon.set(e.owner, e.weaponId);
+        return;
+      case 'impact':
+        if (e.target >= 0) this.credit(e.target, e.owner, this.pidWeapon.get(e.pid) ?? this.ownerWeapon.get(e.owner) ?? null);
+        return;
+      case 'dmg': {
+        if (e.source < 0) return;
+        if (e.cause === 'ram') this.credit(e.target, e.source, null, 'RAM');
+        else if (e.cause === 'mine') this.credit(e.target, e.source, null, 'MINE');
+        else {
+          // Keep a precise credit from the same owner (beam / melee / impact); else use their last weapon.
+          const prev = this.lastHit.get(e.target);
+          if (prev && prev.owner === e.source && prev.weaponId && this.time - prev.t < 1) prev.t = this.time;
+          else this.credit(e.target, e.source, this.ownerWeapon.get(e.source) ?? null);
+        }
+        return;
+      }
+      case 'kill':
+        return;
+      default:
+        return;
+    }
+  }
+
+  /** Weapon (or cause) credited for `victim`'s death by `killer`. */
+  private killWeapon(killer: number, victim: number): KillWeapon | null {
+    if (killer < 0) return null;
+    const hit = this.lastHit.get(victim);
+    this.lastHit.delete(victim);
+    const fresh = hit && hit.owner === killer && this.time - hit.t < CREDIT_S ? hit : null;
+    const weaponId = fresh ? fresh.weaponId : this.ownerWeapon.get(killer) ?? null;
+    if (fresh?.cause && !fresh.weaponId) return { name: fresh.cause, color: 0x8a7a66, icon: fresh.cause === 'RAM' ? '⇶' : '✹' };
+    if (!weaponId) return null;
+    const def = getWeapon(weaponId);
+    return { name: def.name, color: def.color, icon: weaponIcon(def) };
   }
 
   private involvesMe(e: GameEvent): boolean {
@@ -495,6 +625,24 @@ export class Game {
         return e.id === me;
       case 'emp':
         return e.hits.includes(me);
+      case 'shot':
+        // Burst follow-ups are not predicted locally: draw them as soon as they arrive.
+        return e.owner === me && (e.b >= BURST_BARREL_STRIDE || !predictsShells(e.weaponId));
+      case 'use':
+      case 'teleport':
+      case 'shield':
+        return e.id === me;
+      case 'beam':
+        return e.owner === me || e.target === me;
+      case 'melee':
+        return e.owner === me || e.target === me;
+      case 'status':
+        return e.target === me;
+      case 'disarm':
+        return e.owner === me || e.victim === me;
+      case 'explode':
+      case 'chain':
+        return e.owner === me;
       default:
         return false;
     }
@@ -519,7 +667,8 @@ export class Game {
     this.aimDebug.onShotResult(r, r.target >= 0 ? this.players.get(r.target)?.name ?? `#${r.target}` : '');
     if (!r.hit || r.dmg <= 0) return;
     const p = new THREE.Vector3(r.point.x, r.point.y, r.point.z);
-    this.ui.spawnNumber(p, String(r.dmg), r.dmg >= 30 ? 'crit' : 'dealt');
+    this.ui.spawnNumber(p, String(r.dmg), r.dmg >= 100 ? 'mega' : r.dmg >= 30 ? 'crit' : 'dealt');
+    if (r.dmg >= 100) this.renderer.pulseChromatic(0.35);
     this.ui.showHitmarker();
     this.audio.hitMarker();
   }
@@ -564,11 +713,15 @@ export class Game {
     this.ui.showHitIndicator(angle, amount);
   }
 
-  private muzzleFlashFor(v: RobotVisual, barrel: number): void {
+  /** Muzzle blast tinted by the weapon and scaled by its model size (sizeMul). */
+  private muzzleFlashFor(v: RobotVisual, barrel: number, weaponId?: WeaponId | null): void {
     this.fleet.muzzleWorld(v, barrel, _v);
     v.onFire();
     _dir.set(Math.sin(v.aimYaw) * Math.cos(v.barrelPitch), Math.sin(v.barrelPitch), Math.cos(v.aimYaw) * Math.cos(v.barrelPitch));
-    this.vfx.muzzleFlash(_v, _dir, _c.setHex(this.colorOf(v.id)));
+    const def = weaponId ? getWeapon(weaponId) : null;
+    if (def) _c.setHex(def.color).lerp(_c2.setHex(this.colorOf(v.id)), 0.25);
+    else _c.setHex(this.colorOf(v.id));
+    this.vfx.muzzleFlash(_v, _dir, _c, def ? fxSize(def) * weaponWeight(def) * 0.85 : 1);
   }
 
   private handleEvent(e: GameEvent): void {
@@ -580,20 +733,32 @@ export class Game {
         const info = this.players.get(e.id);
         if (info) info.weaponId = e.weaponId;
         if (e.id === this.myId) {
+          const prev = this.myWeaponId;
           this.myWeaponId = e.weaponId;
+          this.optimisticSpent = null;
           this.localFireCooldown = 0;
-          if (e.weaponId) this.audio.pick();
+          if (e.weaponId && e.weaponId !== prev) {
+            const def = getWeapon(e.weaponId);
+            this.audio.pick();
+            this.ui.weaponSplash(def);
+          } else if (!e.weaponId && prev) this.showSpent(prev);
         }
         return;
       }
       case 'shot': {
-        if (e.owner === this.myId) return;
-        this.projectiles.spawn(e.owner, e.p, e.v, e.bounces, getWeapon(e.weaponId).color, e.pid, -1, e.b, false, e.lifetime);
+        // Our first volley is predicted in fireLocal; burst follow-ups come from the server.
+        if (e.owner === this.myId && e.b < BURST_BARREL_STRIDE && predictsShells(e.weaponId)) return;
+        const own = e.owner === this.myId;
+        const def = getWeapon(e.weaponId);
+        this.projectiles.spawn(e.owner, e.p, e.v, e.bounces, def.color, e.pid, -1, e.b, false, e.lifetime, e.weaponId);
         // The server already flew this shell `ff` seconds (hitscan assist).
         if (e.ff > 0) this.projectiles.fastForward(e.pid, e.ff);
         const v = this.fleet.get(e.owner);
-        if (v && e.b % getWeapon(e.weaponId).pellets === 0) this.muzzleFlashFor(v, e.b);
-        if (e.b === 0) this.audio.cannon(_v.set(e.p.x, e.p.y, e.p.z), cam, false, e.weaponId);
+        if (v && e.b % Math.max(1, def.pellets) === 0) this.muzzleFlashFor(v, e.b, e.weaponId);
+        if (e.b % BURST_BARREL_STRIDE === 0) {
+          this.audio.cannon(own ? null : _v.set(e.p.x, e.p.y, e.p.z), own ? null : cam, own, e.weaponId);
+          if (own) this.cameraCtl.addTrauma(0.06 * weaponWeight(e.weaponId));
+        }
         return;
       }
       case 'bounce':
@@ -619,12 +784,26 @@ export class Game {
       }
       case 'dmg': {
         const p = new THREE.Vector3(e.p.x, e.p.y, e.p.z);
+        const mine = e.target === this.myId;
+        const dealt = !mine && e.source === this.myId;
+        // Sustained sources (burn / poison / zones / torch / chainsaw ticks) are summed into one number.
+        if (e.amount < TICK_DAMAGE || e.cause === 'burn' || e.cause === 'poison' || e.cause === 'zone') {
+          if (mine || dealt) this.accumulateTick(e.target, e.amount, p, mine);
+          if (Math.random() < 0.15) this.fleet.get(e.target)?.onDamaged();
+          return;
+        }
         this.fleet.get(e.target)?.onDamaged();
-        if (e.target === this.myId) {
+        if (mine) {
           const src = e.source >= 0 ? this.robotPosition(e.source) : null;
           this.indicateHitFrom(src ?? p, e.amount);
           this.onLocalDamaged(e.amount);
-        } else if (e.source === this.myId) this.ui.spawnNumber(p, String(e.amount), 'dealt');
+        } else if (dealt) {
+          this.ui.spawnNumber(p, String(e.amount), e.amount >= 100 ? 'mega' : e.amount >= 30 ? 'crit' : 'dealt');
+          if (e.cause !== 'ram') {
+            this.ui.showHitmarker();
+            this.audio.hitMarker();
+          }
+        }
         return;
       }
       case 'heal': {
@@ -633,7 +812,14 @@ export class Game {
         if (e.from !== undefined) {
           const a = this.robotPosition(e.from);
           const b = this.robotPosition(e.target);
-          if (a && b) this.vfx.leechTether(a, b);
+          if (a && b) {
+            this.vfx.leechTether(a, b);
+            // Big lifesteal drains (leech dart) land as a visible heal surge on the shooter.
+            if (e.amount >= 30) {
+              this.vfx.healBurst(b, Math.min(1.8, 0.8 + e.amount / 150));
+              this.audio.heal(e.target === this.myId ? null : b, e.target === this.myId ? null : this.renderer.camera);
+            }
+          }
         }
         return;
       }
@@ -644,9 +830,10 @@ export class Game {
           this.debris.spawn(this.fleet.createDebris(v), e.p, e.q, e.v);
           v.visible = false;
         }
-        this.vfx.explosion(p, 1.15, _c.setHex(this.colorOf(e.id)));
-        this.audio.explosion(p, cam, 1);
-        this.traumaFrom(p, 26, 0.7);
+        // Every weapon one-shots now, so each wreck goes up big.
+        this.vfx.explosion(p, 1.35, _c.setHex(this.colorOf(e.id)));
+        this.audio.explosion(p, cam, 1.2);
+        this.traumaFrom(p, 30, 0.75);
         if (e.id === this.myId) {
           this.deathPos.copy(p);
           this.respawnAt = performance.now() + 3000;
@@ -663,15 +850,21 @@ export class Game {
         const victim = this.players.get(e.victim);
         const assists = e.assists.map((a) => this.players.get(a)).filter((x): x is PlayerInfo => !!x);
         const mine = e.killer === this.myId || e.victim === this.myId || e.assists.includes(this.myId);
-        this.ui.addKill(killer, victim, assists, mine);
+        const weapon = this.killWeapon(e.killer, e.victim);
+        this.ui.addKill(killer, victim, assists, mine, weapon);
+        if (e.victim === this.myId) this.killerWeapon = weapon?.name ?? '';
         if (e.killer === this.myId && victim) {
-          this.ui.spawnNumber(this.localPosition(), `+100 XP  ${victim.name} destroyed`, 'crit');
+          this.ui.spawnNumber(this.localPosition(), '+100 XP', 'crit');
           this.ui.showHitmarker(true);
-          this.ui.showKillBanner(victim.name, victim.color, '+100 XP');
+          this.ui.showKillBanner(victim.name, victim.color, '+100 XP', weapon);
+          this.ui.killFlash(weapon?.color ?? victim.color);
           this.audio.killConfirm();
           this.cameraCtl.punchIn(1);
-          // Hitstop: visuals (not the simulation) slow down for a beat.
-          this.hitstop = HITSTOP_S;
+          this.cameraCtl.addTrauma(0.35);
+          this.renderer.pulseChromatic(0.8);
+          // Hitstop then a short slow-mo: visuals (not the simulation) linger on the kill.
+          this.hitstop = HITSTOP_S * 1.5;
+          this.slowmo = SLOWMO_S;
         } else if (e.assists.includes(this.myId)) this.ui.spawnNumber(this.localPosition(), '+40 XP assist', 'heal');
         return;
       }
@@ -684,6 +877,7 @@ export class Game {
         this.interp.delete(e.id);
         if (e.id === this.myId) {
           this.ui.setCenterMessage('');
+          this.killerWeapon = '';
           this.cameraCtl.snap();
         }
         return;
@@ -733,6 +927,178 @@ export class Game {
         if (e.a === this.myId || e.b === this.myId) this.cameraCtl.addTrauma(Math.min(0.7, e.speed * 0.04));
         return;
       }
+      case 'use': {
+        this.lastUse.set(e.id, { weaponId: e.weaponId, t: this.time });
+        // Our own non-projectile uses were already drawn by local prediction.
+        if (e.id === this.myId && this.time - this.localUseAt < 1) return;
+        this.playUse(e.id, e.weaponId, e.p, e.yaw, e.pitch);
+        return;
+      }
+      case 'beam': {
+        const def = getWeapon(e.weaponId);
+        const from = new THREE.Vector3(e.from.x, e.from.y, e.from.z);
+        const to = new THREE.Vector3(e.to.x, e.to.y, e.to.z);
+        // Start remote beams at the shooter's drawn muzzle so the beam leaves the gun.
+        const shooter = this.fleet.get(e.owner);
+        if (shooter && shooter.visible) {
+          this.fleet.muzzleWorld(shooter, 0, from);
+          shooter.onFire();
+        }
+        const weight = weaponWeight(def);
+        this.vfx.beam(from, to, _c.setHex(def.color), e.target >= 0, fxSize(def) * weight * 0.85);
+        this.audio.beam(e.owner === this.myId ? null : from, e.owner === this.myId ? null : cam, e.owner === this.myId, weight);
+        if (e.target >= 0) this.traumaFrom(to, 10, 0.25);
+        if (e.target >= 0) this.fleet.get(e.target)?.onDamaged();
+        if (e.owner === this.myId) {
+          this.cameraCtl.addTrauma(0.15 * weight);
+          this.renderer.pulseChromatic(0.3);
+        }
+        if (e.target === this.myId) {
+          this.indicateHitFrom(from, 40);
+          this.renderer.pulseChromatic(0.6);
+        }
+        return;
+      }
+      case 'explode': {
+        const def = getWeapon(e.weaponId);
+        const p = new THREE.Vector3(e.p.x, e.p.y, e.p.z);
+        const color = _c.setHex(def.color);
+        const r = Math.max(1, e.r);
+        // Branch on what the weapon does, never on its id: kinds and fields change with balance passes.
+        if (def.kind === 'self' || def.kind === 'pulse' || (def.shield > 0 && !def.zone)) {
+          // Energy shockwave (e.g. shield canister): cyan rings and lightning, no fireball.
+          this.vfx.energyBlast(p, r, color);
+          this.audio.zap(p, cam, true, weaponWeight(def));
+          this.audio.explosion(p, cam, Math.min(1, r / 10));
+          this.traumaFrom(p, r * 3 + 8, 0.7);
+        } else {
+          if (def.kind === 'deploy') this.vfx.zones.detonateNear(p.x, p.z, Math.max(4, def.triggerRadius ?? 0) + 2);
+          const zoneKind = def.zone?.kind;
+          const style = zoneKind === 'fire' && def.kind === 'lob' ? 'fire'
+            : zoneKind === 'acid' && def.kind === 'lob' ? 'acid'
+            : zoneKind === 'toxic' || zoneKind === 'acid' ? 'toxic'
+            : zoneKind === 'fire' && def.explodeRadius < 4 ? 'fire'
+            : 'rocket';
+          this.vfx.blast(p, r, color, style);
+          const scale = Math.max(0.5, Math.min(2, r / 6));
+          if (style === 'rocket' || style === 'toxic') this.audio.explosion(p, cam, scale * Math.min(1.25, weaponWeight(def)));
+          else {
+            this.audio.ignite(p, cam, style === 'fire');
+            if (r >= 4) this.audio.explosion(p, cam, scale * 0.6);
+          }
+          // Shake falls off with distance; big blasts reach much further.
+          this.traumaFrom(p, r * 3.5 + 8, style === 'rocket' || style === 'toxic' ? Math.min(1, 0.55 + r * 0.04) : 0.4);
+        }
+        if (e.owner === this.myId) this.renderer.pulseChromatic(0.3);
+        return;
+      }
+      case 'zone': {
+        this.vfx.addZone(e.zid, e.kind, e.p, e.r, e.dur);
+        // A deploy weapon with a trigger radius drops a live proximity bomb at the zone's centre.
+        const used = this.lastUse.get(e.owner);
+        const droppedId = used && this.time - used.t < 3 ? used.weaponId : this.ownerWeapon.get(e.owner);
+        const dropped = droppedId ? getWeapon(droppedId) : null;
+        if (dropped && dropped.kind === 'deploy' && (dropped.triggerRadius ?? 0) > 0) this.vfx.zones.armBomb(e.zid, dropped.color, dropped.triggerRadius);
+        if (e.kind === 'toxic') this.audio.ignite(_v.set(e.p.x, e.p.y, e.p.z), cam, false);
+        return;
+      }
+      case 'chain': {
+        if (e.pts.length < 2) return;
+        const owned = this.ownerWeapon.get(e.owner);
+        const def = owned ? getWeapon(owned) : null;
+        this.vfx.chain(e.pts, _c.setHex(def && def.chain > 0 ? def.color : 0x7ff3ff), def ? fxSize(def) : 1.2);
+        this.audio.zap(_v.set(e.pts[0].x, e.pts[0].y, e.pts[0].z), cam, true, def ? weaponWeight(def) : 1);
+        for (let i = 1; i < e.pts.length; i++) this.traumaFrom(_v.set(e.pts[i].x, e.pts[i].y, e.pts[i].z), 9, 0.2);
+        return;
+      }
+      case 'teleport': {
+        const from = new THREE.Vector3(e.from.x, e.from.y, e.from.z);
+        const to = new THREE.Vector3(e.to.x, e.to.y, e.to.z);
+        const use = this.lastUse.get(e.id);
+        const recent = use && this.time - use.t < 1.5 ? getWeapon(use.weaponId) : null;
+        const shotBy = this.ownerWeapon.get(e.id);
+        const blinker = recent ?? (shotBy ? getWeapon(shotBy) : null);
+        if (blinker && blinker.kind === 'dash') this.vfx.dashSlash(from, to, _c.setHex(blinker.color), fxSize(blinker));
+        else this.vfx.teleport(from, to, _c.setHex(blinker && blinker.teleport ? blinker.color : 0x8fd8ff), blinker ? fxSize(blinker) : 1.2);
+        this.audio.teleport(to, cam);
+        if (e.id !== this.myId) this.interp.delete(e.id);
+        else {
+          this.renderer.dashBlur(1);
+          this.cameraCtl.addTrauma(0.3);
+        }
+        return;
+      }
+      case 'status': {
+        const v = this.fleet.get(e.target);
+        if (v && v.visible) this.vfx.statusBurst(v.position, e.effect);
+        if (e.effect === 'stun' && v) this.audio.zap(v.position, cam, false);
+        if (e.target === this.myId) {
+          this.ui.spawnNumber(this.localPosition(), STATUS_LABEL[e.effect], 'taken');
+          if (e.effect === 'stun') this.cameraCtl.addTrauma(0.3);
+        }
+        return;
+      }
+      case 'shield': {
+        const v = this.fleet.get(e.id);
+        if (!v) return;
+        if (e.amount > 0) {
+          const use = this.lastUse.get(e.id);
+          const justUsed = !!use && getWeapon(use.weaponId).shield > 0 && this.time - use.t < 1;
+          if (!justUsed && v.visible) this.vfx.shieldUp(v.position, 1.2);
+          if (e.id === this.myId) this.ui.spawnNumber(this.localPosition(), `+${e.amount} SHIELD`, 'heal');
+        } else {
+          if (v.visible) this.vfx.shieldBreak(v.position);
+          this.audio.shield(v.position, cam, true);
+          if (e.id === this.myId) this.ui.spawnNumber(this.localPosition(), 'SHIELD DOWN', 'taken');
+        }
+        return;
+      }
+      case 'melee': {
+        const def = getWeapon(e.weaponId);
+        const p = new THREE.Vector3(e.p.x, e.p.y, e.p.z);
+        // Sustained weapons (torch, chainsaw) report a hit every tick: throttle the feedback.
+        const key = `${e.owner}:${e.target}`;
+        const last = this.meleeFeedbackAt.get(key) ?? -10;
+        if (this.time - last < (def.duration > 0 ? 0.22 : 0.05)) return;
+        this.meleeFeedbackAt.set(key, this.time);
+        const target = this.fleet.get(e.target);
+        target?.onDamaged();
+        const owner = this.robotPosition(e.owner);
+        _n.set(0, 1, 0);
+        if (owner) _n.set(p.x - owner.x, 0.4, p.z - owner.z).normalize();
+        if (def.kind === 'cone') this.vfx.statusBurst(p, 'burn');
+        else {
+          this.vfx.impact(p, _n, 'robot', _c.setHex(def.color), def.duration > 0 ? 0.9 : 1.8);
+          // Impact frame: a big flash + punched ring for every decisive (non-sustained) hit.
+          if (def.duration <= 0) this.vfx.impactFrame(p, _n, _c.setHex(def.color), Math.max(0.6, e.dmg / 100) * fxSize(def) / 1.2);
+          this.audio.meleeHit(p, cam, e.dmg);
+        }
+        if (def.duration <= 0) this.traumaFrom(p, 12, Math.min(0.4, e.dmg / 400));
+        if (e.owner === this.myId) {
+          if (def.duration <= 0) {
+            this.cameraCtl.addTrauma(Math.min(0.6, 0.2 + e.dmg / 200));
+            // Hit-stop scales with the blow: kill-tier hits freeze the frame noticeably.
+            this.hitstop = Math.max(this.hitstop, HITSTOP_S * Math.min(1.6, 0.6 + e.dmg / 120));
+            this.renderer.pulseChromatic(Math.min(0.6, e.dmg / 250));
+          }
+        }
+        if (e.target === this.myId && owner) this.indicateHitFrom(owner, e.dmg);
+        return;
+      }
+      case 'disarm': {
+        const victim = this.robotPosition(e.victim);
+        if (victim) this.ui.spawnNumber(victim, 'DISARMED!', 'crit');
+        if (e.victim === this.myId) {
+          this.lastDisarmAt = this.time;
+          this.ui.toast('DISARMED!', 'Your weapon was knocked away. Find another pad.', null, 'warn');
+          this.audio.spent(true);
+          this.cameraCtl.addTrauma(0.3);
+        } else if (e.owner === this.myId) {
+          this.ui.showHitmarker(true);
+          this.audio.hitMarker();
+        }
+        return;
+      }
       case 'tune':
         applyPhysicsTuning(e.key, e.value);
         return;
@@ -742,6 +1108,11 @@ export class Game {
         this.debris.clear();
         this.projectiles.clear();
         this.vfx.clearTransient();
+        this.activeUses.length = 0;
+        this.tickDamage.clear();
+        this.lastHit.clear();
+        this.pidWeapon.clear();
+        this.slowmo = 0;
         if (this.started) this.input.requestLock();
         return;
     }
@@ -754,6 +1125,160 @@ export class Game {
     this.renderer.pulseChromatic(Math.min(0.9, 0.25 + amount / 40));
     this.cameraCtl.addTrauma(Math.min(0.6, 0.15 + amount / 60));
     this.audio.hurt();
+  }
+
+  /** Toast + sound when our single-use weapon is consumed (not on death or disarm). */
+  private showSpent(weaponId: WeaponId): void {
+    if (this.time - this.lastDisarmAt < 1 || performance.now() < this.respawnAt) return;
+    const def = getWeapon(weaponId);
+    this.ui.toast(`${def.name.toUpperCase()} SPENT`, 'Drive over a weapon pad to re-arm', def.color);
+    this.audio.spent();
+  }
+
+  private accumulateTick(target: number, amount: number, p: THREE.Vector3, taken: boolean): void {
+    if (amount <= 0) return;
+    const acc = this.tickDamage.get(target);
+    if (acc) {
+      acc.amount += amount;
+      acc.p.copy(p);
+    } else this.tickDamage.set(target, { amount, since: this.time, p: p.clone(), taken });
+  }
+
+  /** Shows summed damage ticks every ~0.6 s. */
+  private flushTickDamage(): void {
+    for (const [target, acc] of this.tickDamage) {
+      if (this.time - acc.since < 0.6) continue;
+      this.tickDamage.delete(target);
+      const amount = Math.round(acc.amount);
+      if (amount <= 0) continue;
+      if (acc.taken) {
+        this.ui.spawnNumber(this.localPosition(), `-${amount}`, 'taken');
+        this.ui.damageFlash();
+      } else {
+        const pos = this.robotPosition(target) ?? acc.p;
+        this.ui.spawnNumber(pos, String(amount), 'dealt');
+      }
+    }
+  }
+
+  /**
+   * Weapon-kind specific feedback for one trigger pull. Projectile / lob kinds
+   * are drawn by their `shot` events; this covers everything else.
+   */
+  private playUse(id: number, weaponId: WeaponId, p: Vec3, yaw: number, pitch: number): void {
+    const def = getWeapon(weaponId);
+    const v = this.fleet.get(id);
+    const pos = v && v.visible ? v.position.clone() : new THREE.Vector3(p.x, p.y, p.z);
+    const cam = this.renderer.camera;
+    const local = id === this.myId;
+    const at = local ? null : pos;
+    const color = new THREE.Color(def.color);
+    const size = fxSize(def);
+    const weight = weaponWeight(def);
+    const lethal = estimateDamage(def) >= 100;
+    switch (def.kind) {
+      case 'projectile':
+      case 'lob':
+        // Shells are drawn from `shot` events; only a self-buff riding on the shot (e.g. a speed rush) shows here.
+        break;
+      case 'beam':
+        if (v) this.muzzleFlashFor(v, 0, weaponId);
+        return;
+      case 'melee': {
+        v?.onFire();
+        const heavy = lethal || def.launch > 0 || def.push >= 20;
+        this.vfx.slash(pos, yaw, def.arc, def.range, color, heavy, size * weight * 0.85);
+        if (def.duration > 0) {
+          this.activeUses.push({ id, weaponId, until: this.time + def.duration });
+          this.audio.chainsaw(at, local ? null : cam, def.duration);
+        } else this.audio.swing(at, local ? null : cam, heavy, weight);
+        if (def.lunge > 0 && v) {
+          this.fleet.chassisDirection(v, BACK, _dir);
+          this.vfx.dashStreaks(pos, _dir);
+          this.vfx.dashStreaks(pos, _dir);
+        }
+        if (local) this.cameraCtl.addTrauma(heavy ? 0.28 : 0.14);
+        break;
+      }
+      case 'dash': {
+        if (v) {
+          v.onDash();
+          this.fleet.chassisDirection(v, BACK, _dir);
+          this.vfx.dashStreaks(pos, _dir);
+          this.vfx.dashStreaks(pos, _dir);
+          for (const n of NOZZLE_TIPS) this.vfx.dashThrusters(this.fleet.chassisPoint(v, n, _v), _dir);
+        }
+        this.vfx.slash(pos, yaw, Math.max(1.4, def.arc), Math.max(5, def.range * 0.25), color, true, size);
+        this.audio.swing(at, local ? null : cam, true, weight);
+        this.audio.dash(at, local ? null : cam);
+        if (local) {
+          this.renderer.dashBlur(1);
+          this.cameraCtl.addTrauma(0.25);
+        }
+        break;
+      }
+      case 'cone':
+        v?.onFire();
+        this.activeUses.push({ id, weaponId, until: this.time + Math.max(0.3, def.duration) });
+        this.audio.flame(at, local ? null : cam, def.duration);
+        break;
+      case 'pulse':
+        if (lethal) this.vfx.energyBlast(pos, def.range, color);
+        else this.vfx.shockRing(pos, def.range, color);
+        this.audio.zap(at, local ? null : cam, true, weight);
+        if (lethal) this.audio.explosion(at, local ? null : cam, Math.min(1.2, def.range / 12));
+        this.traumaFrom(pos, def.range * 2, lethal ? 0.7 : 0.4);
+        if (local) this.renderer.pulseChromatic(lethal ? 0.7 : 0.4);
+        break;
+      case 'self':
+        // A self weapon with damage also blasts a shockwave; the server's `explode` event draws it.
+        if (local) this.cameraCtl.addTrauma(def.damage > 0 ? 0.3 : 0.1);
+        break;
+      case 'deploy': {
+        // Dropped behind the robot.
+        const back = v ? this.fleet.chassisDirection(v, BACK, _dir) : _dir.set(-Math.sin(yaw), 0, -Math.cos(yaw));
+        const drop = pos.clone().addScaledVector(back.setY(0).normalize(), 2.4);
+        this.vfx.deployThud(drop, color, size);
+        this.audio.deploy(local ? null : drop, local ? null : cam);
+        break;
+      }
+    }
+    // Buff fields apply whatever the kind (a leech dart can carry a speed rush, a pulse a shield...).
+    if (def.heal > 0) {
+      this.vfx.healBurst(pos, size);
+      this.audio.heal(at, local ? null : cam);
+    }
+    if (def.shield > 0) {
+      this.vfx.shieldUp(pos, size);
+      this.audio.shield(at, local ? null : cam, false);
+    }
+    if (def.speedBoost > 0 && v && def.kind !== 'melee') {
+      this.fleet.chassisDirection(v, BACK, _dir);
+      for (const n of NOZZLE_TIPS) this.vfx.dashThrusters(this.fleet.chassisPoint(v, n, _v), _dir);
+    }
+    void pitch;
+  }
+
+  /** Per-frame emitters for sustained uses (torch flames, chainsaw sparks). */
+  private updateActiveUses(dt: number): void {
+    for (let i = this.activeUses.length - 1; i >= 0; i--) {
+      const a = this.activeUses[i];
+      const v = this.fleet.get(a.id);
+      if (!v || !v.visible || this.time >= a.until) {
+        this.activeUses.splice(i, 1);
+        continue;
+      }
+      const def = getWeapon(a.weaponId);
+      this.fleet.muzzleWorld(v, 0, _v);
+      _dir.set(Math.sin(v.aimYaw) * Math.cos(v.barrelPitch), Math.sin(v.barrelPitch), Math.cos(v.aimYaw) * Math.cos(v.barrelPitch));
+      if (def.kind === 'cone') this.vfx.flameCone(_v, _dir, def.range, def.arc, dt, fxSize(def));
+      else {
+        // Chainsaw: sparks off the front of the chassis.
+        this.fleet.chassisDirection(v, FORWARD, _dir);
+        _v.copy(v.position).addScaledVector(_dir, 1.6).setY(v.position.y + 0.5);
+        this.vfx.sawSparks(_v, _dir, dt, fxSize(def));
+      }
+    }
   }
 
   private dashEffect(v: RobotVisual): void {
@@ -863,23 +1388,46 @@ export class Game {
     frame.aimPitch = this.aim.pitch;
   }
 
+  /**
+   * One trigger pull of the single-use weapon. Shells (first volley only) are
+   * predicted for projectile / lob kinds; other kinds play their use effect
+   * immediately and the server echo is skipped. The weapon is treated as spent
+   * right away, exactly as the server does.
+   */
   private fireLocal(frame: InputFrame): void {
     const c = this.predictor.controller;
-    if (!c || !this.myWeaponId) return;
-    const cfg = weaponStats(this.myWeaponId);
+    const weaponId = this.myWeaponId;
+    if (!c || !weaponId) return;
+    const def = getWeapon(weaponId);
+    const cfg = weaponStats(weaponId);
     const st = this.myStats;
     this.localFireCooldown = cfg.interval / st.fireRateMul;
-    // Same shot spec (origin, direction, seeded spread) the server computes for this input seq.
-    const shots = computeWeaponShots(c.body.translation(), c.body.rotation(), frame.aimYaw, frame.aimPitch, st.projectileCount, this.myId, frame.seq, this.myWeaponId);
-    const color = getWeapon(this.myWeaponId).color;
     const v = this.fleet.get(this.myId);
-    for (const s of shots) {
-      const vel = { x: s.dir.x * cfg.speed, y: s.dir.y * cfg.speed, z: s.dir.z * cfg.speed };
-      this.projectiles.spawn(this.myId, s.origin, vel, st.ricochetBounces, color, 0, frame.seq, s.barrel, true, cfg.lifetime);
-      if (v && s.barrel % getWeapon(this.myWeaponId).pellets === 0) this.muzzleFlashFor(v, s.barrel);
+    if (def.kind === 'projectile' || def.kind === 'lob') {
+      if (predictsShells(weaponId)) {
+        // Same shot spec (origin, direction, seeded spread) the server computes for this input seq.
+        const shots = computeWeaponShots(c.body.translation(), c.body.rotation(), frame.aimYaw, frame.aimPitch, st.projectileCount, this.myId, frame.seq, weaponId);
+        for (const s of shots) {
+          const vel = { x: s.dir.x * cfg.speed, y: s.dir.y * cfg.speed, z: s.dir.z * cfg.speed };
+          this.projectiles.spawn(this.myId, s.origin, vel, st.ricochetBounces, def.color, 0, frame.seq, s.barrel, true, cfg.lifetime, weaponId);
+          if (v && s.barrel % Math.max(1, def.pellets) === 0) this.muzzleFlashFor(v, s.barrel, weaponId);
+        }
+        this.audio.cannon(null, null, true, weaponId);
+        this.cameraCtl.addTrauma((def.knockbackMul >= 2 ? 0.18 : 0.09) * weaponWeight(def));
+        if (def.heal > 0 || def.shield > 0 || def.speedBoost > 0) {
+          this.localUseAt = this.time;
+          this.playUse(this.myId, weaponId, c.body.translation(), frame.aimYaw, frame.aimPitch);
+        }
+      }
+    } else if (def.kind !== 'beam') {
+      const p = c.body.translation();
+      this.localUseAt = this.time;
+      this.playUse(this.myId, weaponId, p, frame.aimYaw, frame.aimPitch);
     }
-    this.audio.cannon(null, null, true, this.myWeaponId);
-    this.cameraCtl.addTrauma(0.1);
+    // Single use: spent on this pull (burst follow-ups and sustained effects keep running server-side).
+    this.myWeaponId = null;
+    this.optimisticSpent = { id: weaponId, until: this.time + 1.5 };
+    this.showSpent(weaponId);
   }
 
   // ------------------------------------------------------------------ frame
@@ -980,6 +1528,10 @@ export class Game {
       vfx.damageSparks(this.fleet.chassisPoint(v, p, _v), this.fleet.chassisDirection(v, UP, _n));
     }
     if (v.flags & RobotFlags.STUNNED) vfx.stunSparks(v.position);
+    if (v.flags & RobotFlags.BURNING) vfx.burning(v.position, dt);
+    if (v.flags & RobotFlags.POISONED) vfx.poisoned(v.position, dt);
+    if (v.flags & RobotFlags.SLOWED) vfx.acidDrip(v.position, dt);
+    if (v.flags & RobotFlags.SHIELDED) vfx.shieldBubble(v.id, v.position);
     if ((v.stacks.field_repair ?? 0) > 0 && v.hp < v.maxHp && v.sinceDamaged > 4 && Math.random() < dt * 12) vfx.repairSwirl(v.position);
   }
 
@@ -990,7 +1542,10 @@ export class Game {
     const me = latest?.robots.get(this.myId);
     // Hitstop slows only what is drawn (fleet, particles, decals); simulation and netcode run at full speed.
     this.hitstop = Math.max(0, this.hitstop - dt);
-    const vdt = this.hitstop > 0 ? dt * HITSTOP_SCALE : dt;
+    this.slowmo = Math.max(0, this.slowmo - dt);
+    // Kill slow-mo eases from SLOWMO_SCALE back to full speed.
+    const slow = this.slowmo > 0 ? SLOWMO_SCALE + (1 - SLOWMO_SCALE) * (1 - this.slowmo / SLOWMO_S) ** 2 : 1;
+    const vdt = this.hitstop > 0 ? dt * HITSTOP_SCALE : dt * slow;
 
     // Local robot (predicted + smoothed).
     let camTarget = this.deathPos;
@@ -1044,6 +1599,8 @@ export class Game {
       }
       this.robotEffects(v, grounded, isMe, vdt);
     }
+    this.updateActiveUses(vdt);
+    this.flushTickDamage();
 
     const alive = !!me && (me.flags & RobotFlags.ALIVE) !== 0;
     const drivingActive = alive && this.started && this.connected && this.phase === MatchPhase.PLAYING
@@ -1169,7 +1726,7 @@ export class Game {
     const info = this.players.get(this.myId);
     const alive = me ? (me.flags & RobotFlags.ALIVE) !== 0 : false;
     const equipped = this.myWeaponId ? getWeapon(this.myWeaponId) : null;
-    ui.setWeapon(equipped?.name ?? 'UNARMED', equipped?.role ?? 'Walk over a weapon to equip');
+    ui.setWeapon(equipped);
     let prompt = '';
     let nearest = 2.6;
     const local = this.predictor.controller?.body.translation();
@@ -1179,10 +1736,10 @@ export class Game {
         if (distance >= nearest) continue;
         nearest = distance;
         const weapon = getWeapon(pad.weaponId);
-        prompt = !pad.available ? `${weapon.name} · restocking ${Math.ceil(pad.respawnIn)}s`
-          : !this.myWeaponId ? `Walk over to collect ${weapon.name}`
+        prompt = !pad.available ? `Pad restocking · new weapon in ${Math.ceil(pad.respawnIn)}s`
+          : !this.myWeaponId ? `Drive over to grab ${weapon.name} · ${weapon.power}`
           : pad.weaponId === this.myWeaponId ? `${weapon.name} already equipped`
-          : `E · Equip ${weapon.name} / ${weapon.role}`;
+          : `E · Swap to ${weapon.name} · ${weapon.power}`;
       }
     }
     ui.setPickupPrompt(prompt);
@@ -1206,7 +1763,14 @@ export class Game {
         abilities.push(a);
       }
       ui.updateAbilities(abilities);
-      ui.setStunned(alive && (me.flags & RobotFlags.STUNNED) !== 0);
+      const f = alive ? me.flags : 0;
+      const tags: string[] = [];
+      if (f & RobotFlags.STUNNED) tags.push('STUNNED');
+      if (f & RobotFlags.BURNING) tags.push('BURNING');
+      if (f & RobotFlags.POISONED) tags.push('POISONED');
+      if (f & RobotFlags.SLOWED) tags.push('SLOWED');
+      if (f & RobotFlags.SHIELDED) tags.push('SHIELDED');
+      ui.setStatusTag(tags.join(' · '));
     }
 
     let timeLeft = 0;
@@ -1242,7 +1806,8 @@ export class Game {
       ui.setCenterMessage('GO!', '', true);
     } else if (me && !alive && this.phase === MatchPhase.PLAYING) {
       const left = Math.max(0, (this.respawnAt - performance.now()) / 1000);
-      ui.setCenterMessage('DESTROYED', `${this.killerName ? `by ${this.killerName} — ` : ''}respawning in ${left.toFixed(1)}s`);
+      const by = this.killerName ? `by ${this.killerName}${this.killerWeapon ? `'s ${this.killerWeapon}` : ''} — ` : '';
+      ui.setCenterMessage('DESTROYED', `${by}respawning in ${left.toFixed(1)}s`);
     } else if (this.started && this.connected && !locked && !this.menu.isOpen && this.phase === MatchPhase.PLAYING) {
       ui.setCenterMessage('CLICK TO RESUME', 'mouse aims • 1/2/3 picks cards');
     } else {

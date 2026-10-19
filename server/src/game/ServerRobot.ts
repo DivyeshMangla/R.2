@@ -18,6 +18,9 @@ import {
 } from '@robot-arena/shared';
 import type { BotAI } from './BotAI';
 
+/** Drive speed multiplier while slowed (acid). */
+export const SLOW_SPEED_MUL = 0.5;
+
 export interface ActiveOffer {
   offerId: number;
   cards: PowerUpId[];
@@ -52,6 +55,23 @@ export class ServerRobot {
   lastCombatTime = -1e9;
   /** attackerId -> last time (s) they damaged this robot; used for assists. */
   readonly damageLog = new Map<number, number>();
+
+  // ---- weapon status effects (see StatusSystem)
+  burnTimer = 0;
+  burnDps = 0;
+  burnSource = -1;
+  poisonTimer = 0;
+  poisonDps = 0;
+  poisonSource = -1;
+  /** Accumulates DoT time; damage is applied in 0.5 s chunks so `dmg` events stay readable. */
+  dotTick = 0;
+  dotBurn = 0;
+  dotPoison = 0;
+  slowTimer = 0;
+  shield = 0;
+  shieldTimer = 0;
+  speedBoostTimer = 0;
+  speedBoostMul = 1;
 
   readonly inputQueue: InputFrame[] = [];
   lastInput: InputFrame = emptyInput();
@@ -93,12 +113,30 @@ export class ServerRobot {
     this.stats = computeStats(this.stacks);
     if (this.stats.maxHp > oldMax) this.hp += this.stats.maxHp - oldMax;
     this.hp = Math.min(this.hp, this.stats.maxHp);
+    this.refreshModifiers();
+  }
+
+  /** Power-up stats combined with temporary slow / speed-boost effects. */
+  refreshModifiers(): void {
+    const slow = this.slowTimer > 0 ? SLOW_SPEED_MUL : 1;
+    const boost = this.speedBoostTimer > 0 ? this.speedBoostMul : 1;
     this.controller.modifiers = {
-      speedMul: this.stats.speedMul,
-      engineMul: this.stats.engineMul,
+      speedMul: this.stats.speedMul * slow * boost,
+      engineMul: this.stats.engineMul * Math.max(slow, 0.7) * boost,
       gripMul: this.stats.gripMul,
       hasDash: this.stats.abilities.includes('dash'),
     };
+  }
+
+  /** Drops every weapon status / buff (death, respawn, match reset). */
+  clearStatus(): void {
+    this.burnTimer = 0; this.burnDps = 0; this.burnSource = -1;
+    this.poisonTimer = 0; this.poisonDps = 0; this.poisonSource = -1;
+    this.dotTick = 0; this.dotBurn = 0; this.dotPoison = 0;
+    this.slowTimer = 0;
+    this.shield = 0; this.shieldTimer = 0;
+    this.speedBoostTimer = 0; this.speedBoostMul = 1;
+    this.refreshModifiers();
   }
 
   resetProgress(): void {
@@ -114,6 +152,7 @@ export class ServerRobot {
     this.hp = this.stats.maxHp;
     this.damageLog.clear();
     this.weaponId = null;
+    this.clearStatus();
   }
 
   toNetState(): RobotNetState {
@@ -124,6 +163,10 @@ export class ServerRobot {
     if (this.controller.sim.boosting) flags |= RobotFlags.BOOSTING;
     if (this.protectTimer > 0) flags |= RobotFlags.PROTECTED;
     if (this.isBot) flags |= RobotFlags.BOT;
+    if (this.burnTimer > 0) flags |= RobotFlags.BURNING;
+    if (this.poisonTimer > 0) flags |= RobotFlags.POISONED;
+    if (this.slowTimer > 0) flags |= RobotFlags.SLOWED;
+    if (this.shield > 0) flags |= RobotFlags.SHIELDED;
     return {
       id: this.id,
       p: s.p,

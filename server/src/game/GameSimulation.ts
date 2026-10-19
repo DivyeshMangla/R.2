@@ -21,6 +21,7 @@ import {
   SPAWN_PROTECTION_S,
   applyPhysicsTuning,
   distance,
+  randomWeaponId,
   type EventsMsg,
   type GameEvent,
   type InputFrame,
@@ -42,6 +43,7 @@ import { PhysicsWorld } from './PhysicsWorld';
 import { PowerUpSystem } from './PowerUpSystem';
 import { ProgressionSystem } from './ProgressionSystem';
 import { ServerRobot } from './ServerRobot';
+import { absorbWithShield, updateStatuses } from './StatusSystem';
 import { WeaponSystem } from './WeaponSystem';
 
 export interface NetSink {
@@ -51,7 +53,8 @@ export interface NetSink {
 
 const MAX_CATCHUP_STEPS = 5;
 const WEAPON_PICKUP_RADIUS = 2.6;
-const WEAPON_RESPAWN_S = 12;
+/** Weapons are single-use, so pads restock quickly (with a new random weapon). */
+const WEAPON_RESPAWN_S = 6;
 
 /** The authoritative match: fixed 60 Hz physics, combat resolution, bots and match flow. */
 export class GameSimulation implements GameHost {
@@ -89,7 +92,8 @@ export class GameSimulation implements GameHost {
     const arena = getArenaDefinition(this.mapId);
     this.physics = new PhysicsWorld(this.mapId);
     this.spawnPoints = arena.spawns;
-    this.weaponPads = arena.pickups.map((pad) => ({ pad, availableAt: 0 }));
+    // Per-match copies: restocked pads roll a new weapon without touching the shared map definition.
+    this.weaponPads = arena.pickups.map((pad) => ({ pad: { ...pad, position: { ...pad.position } }, availableAt: 0 }));
     const startMs = performance.now();
     this.clock = clock ?? (() => performance.now() - startMs);
     this.weapons = new WeaponSystem(this, this.lag);
@@ -138,8 +142,10 @@ export class GameSimulation implements GameHost {
 
   applyDamage(target: ServerRobot, amount: number, attacker: ServerRobot | null, cause: DamageCause, point: Vec3): number {
     if (!this.combatEnabled() || !target.alive || target.protectTimer > 0 || amount <= 0) return 0;
-    const dealt = Math.min(target.hp, amount);
-    target.hp -= amount;
+    // Shields soak damage first; the full hit still counts as landed for hit feedback.
+    const toHp = absorbWithShield(this, target, amount);
+    const dealt = Math.min(target.hp, toHp);
+    target.hp -= toHp;
     target.lastCombatTime = this.time;
     if (attacker && attacker !== target) {
       attacker.lastCombatTime = this.time;
@@ -205,6 +211,8 @@ export class GameSimulation implements GameHost {
     robot.weaponId = nearest.pad.weaponId;
     robot.fireCooldown = 0;
     nearest.availableAt = this.time + WEAPON_RESPAWN_S;
+    // The pad restocks with a different weapon so the arsenal on the map keeps rotating.
+    nearest.pad.weaponId = randomWeaponId(Math.random, robot.weaponId);
     this.emit({ k: 'weapon', id: robot.id, weaponId: robot.weaponId });
     this.markRosterDirty();
   }
@@ -326,6 +334,7 @@ export class GameSimulation implements GameHost {
     victim.deaths += 1;
     victim.respawnTimer = RESPAWN_DELAY_S;
     victim.stunTimer = 0;
+    victim.clearStatus();
     victim.inputQueue.length = 0;
     victim.controller.setEnabled(false);
     this.emit({ k: 'death', id: victim.id, p: s.p, q: s.q, v: s.v, killer: killer ? killer.id : -1 });
@@ -350,6 +359,7 @@ export class GameSimulation implements GameHost {
     r.aimPitch = 0;
     r.lastCombatTime = -1e9;
     r.weaponId = null;
+    r.clearStatus();
     this.emit({ k: 'weapon', id: r.id, weaponId: null });
     this.markRosterDirty();
     this.emit({ k: 'respawn', id: r.id, p: spawn.position, yaw: spawn.yaw });
@@ -421,6 +431,7 @@ export class GameSimulation implements GameHost {
 
     this.detectRams();
     this.weapons.update(dt);
+    updateStatuses(this, dt);
     this.powerups.update(dt);
     this.progression.update();
 
@@ -522,7 +533,11 @@ export class GameSimulation implements GameHost {
     this.lag.clear();
     this.powerups.clear();
     this.ramCooldowns.clear();
-    for (const entry of this.weaponPads) entry.availableAt = 0;
+    const definition = getArenaDefinition(this.mapId).pickups;
+    this.weaponPads.forEach((entry, i) => {
+      entry.availableAt = 0;
+      entry.pad.weaponId = definition[i].weaponId;
+    });
     const spawns = [...this.spawnPoints].sort(() => Math.random() - 0.5);
     let i = 0;
     for (const r of this.robotMap.values()) {

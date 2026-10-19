@@ -19,6 +19,8 @@ import {
   RobotController,
   rotateVec,
   weaponStats,
+  getWeapon,
+  physicsConfig,
   WEAPONS,
   type ArenaBlock,
   type GameEvent,
@@ -86,7 +88,9 @@ function maps(): void {
       assert.ok(Object.values(map.palette).every((color) => Number.isInteger(color) && color >= 0 && color <= 0xffffff));
       assert.ok(definition.pickups.length >= 12);
       assert.equal(new Set(definition.pickups.map((pad) => pad.id)).size, definition.pickups.length);
-      for (const weapon of WEAPONS) assert.ok(definition.pickups.some((pad) => pad.weaponId === weapon.id), `${map.id} must offer ${weapon.id}`);
+      // 29 single-use weapons rotate through restocking pads; each map starts with a varied spread.
+      assert.ok(new Set(definition.pickups.map((pad) => pad.weaponId)).size >= 12, `${map.id} must start with a varied arsenal`);
+      assert.ok(definition.pickups.every((pad) => WEAPONS.some((weapon) => weapon.id === pad.weaponId)));
       assert.equal(definition.spawns.length, 8);
       physics.step();
       for (const point of [...definition.pickups.map((pad) => pad.position), ...definition.spawns.map((spawn) => spawn.position)]) {
@@ -188,10 +192,13 @@ function pickups(): void {
     assert.equal(human.fireCooldown, 0, 'Equipping a pickup clears the previous weapon cooldown');
     const pickupShots = new WeaponSystem(game, new LagCompensator());
     assert.equal(pickupShots.tryFire(human, { aimYaw: 0, aimPitch: 0, seq: 100, viewT: 0 }), true);
+    assert.equal(human.weaponId, null, 'Weapons are single-use: one trigger pull spends them');
     pickupShots.clear();
     const consumed = game.pickupSnapshot().find((p) => p.id === pad.id)!;
     assert.equal(consumed.available, false);
-    assert.ok(consumed.respawnIn > 11 && consumed.respawnIn <= 12);
+    assert.ok(consumed.respawnIn > 5 && consumed.respawnIn <= 6);
+    assert.notEqual(consumed.weaponId, pad.weaponId, 'A consumed pad restocks with a different weapon');
+    const restocked = consumed;
     assert.ok(events.some((event) => event.k === 'weapon' && event.id === human.id && event.weaponId === pad.weaponId));
     assert.equal(isolated.pickupSnapshot().find((p) => p.id === pad.id)!.available, true);
     human.weaponId = firstPad.weaponId;
@@ -203,7 +210,7 @@ function pickups(): void {
     assert.equal(game.pickupSnapshot().find((p) => p.id === pad.id)!.available, true);
     assert.ok(lastSnapshot?.pickups?.some((p) => p.id === pad.id && p.available));
     near(pad.position);
-    human.weaponId = pad.weaponId;
+    human.weaponId = restocked.weaponId;
     input(Buttons.INTERACT);
     assert.equal(game.pickupSnapshot().find((p) => p.id === pad.id)!.available, true, 'Same weapon does not consume a pad');
     human.weaponId = null;
@@ -222,7 +229,7 @@ function pickups(): void {
     assert.ok(events.some((event) => event.k === 'weapon' && event.id === human.id && event.weaponId === null));
     near(pad.position);
     input(0);
-    assert.equal(human.weaponId, pad.weaponId, 'A respawned robot auto-equips its first weapon again');
+    assert.equal(human.weaponId, restocked.weaponId, 'A respawned robot auto-equips its first weapon again');
     advance(game, MATCH_DURATION_S - 0.5 - game.time);
     near(pad.position);
     human.weaponId = firstPad.weaponId;
@@ -232,6 +239,7 @@ function pickups(): void {
     assert.equal(human.weaponId, null, 'New match starts unarmed');
     assert.ok([...game.robots()].every((robot) => robot.weaponId === null), 'Bots also reset unarmed');
     assert.equal(game.pickupSnapshot().find((p) => p.id === pad.id)!.available, true);
+    assert.equal(game.pickupSnapshot().find((p) => p.id === pad.id)!.weaponId, pad.weaponId, 'A new match restores the map\'s starting pads');
     console.log('PASS pickup distance, interaction, duplicate/dead protection, snapshot cooldown, match isolation, restock and respawn/reset');
   } finally { game.dispose(); isolated.dispose(); }
 }
@@ -270,28 +278,36 @@ function weapons(): void {
     const offset = rotateVec(target.controller.body.rotation(), ROBOT_HITBOX_CENTER);
     const tp = target.position();
     const aim = aimAnglesFrom(getTurretPivot(shooter.position(), shooter.controller.body.rotation(), { x: 0, y: 0, z: 0 }), { x: tp.x + offset.x, y: tp.y + offset.y, z: tp.z + offset.z }, makeAimSolution());
-    const metrics: Record<string, { projectiles: number; speed: number; interval: number; damage: number }> = {};
-    for (const id of ['pulse', 'scatter', 'rail', 'repeater'] satisfies WeaponId[]) {
+    const metrics: Record<string, { projectiles: number; speed: number; damage: number }> = {};
+    shooter.aimYaw = aim.yaw;
+    shooter.aimPitch = aim.pitch;
+    for (const id of ['pistol', 'shotgun', 'compound_bow', 'revolver'] satisfies WeaponId[]) {
       shooter.weaponId = id;
       shooter.fireCooldown = 0;
       events.length = 0;
       damages.length = 0;
       const spec = weaponStats(id);
+      const def = getWeapon(id);
       assert.equal(system.tryFire(shooter, { aimYaw: aim.yaw, aimPitch: aim.pitch, seq: 1, viewT: 0 }), true);
-      assert.equal(system.tryFire(shooter, { aimYaw: aim.yaw, aimPitch: aim.pitch, seq: 2, viewT: 0 }), false, 'Weapon cooldown must reject an immediate second shot');
+      assert.equal(shooter.weaponId, null, `${id} is spent by one trigger pull`);
+      assert.ok(events.some((event) => event.k === 'use' && event.weaponId === id));
+      assert.ok(events.some((event) => event.k === 'weapon' && event.id === shooter.id && event.weaponId === null), 'Spending emits weapon:null');
+      assert.equal(system.tryFire(shooter, { aimYaw: aim.yaw, aimPitch: aim.pitch, seq: 2, viewT: 0 }), false, 'A spent weapon cannot fire again');
+      const burstTime = (def.burst - 1) * physicsConfig.fireInterval * def.fireIntervalMul;
+      for (let tick = 0; tick < Math.ceil((burstTime + spec.lifetime + 2 * FIXED_DT) / FIXED_DT); tick++) system.update(FIXED_DT);
       const shots = events.filter((event) => event.k === 'shot');
-      assert.ok(shots.length > 0);
+      assert.equal(shots.length, def.pellets * def.burst, `${id} fires its whole burst from one use`);
       assert.ok(shots.every((shot) => shot.weaponId === id && shot.lifetime === spec.lifetime && Math.abs(Math.hypot(shot.v.x, shot.v.y, shot.v.z) - spec.speed) < 1e-5));
-      for (let tick = 0; tick < Math.ceil((spec.lifetime + FIXED_DT) / FIXED_DT); tick++) system.update(FIXED_DT);
+      assert.equal(new Set(shots.map((shot) => shot.b)).size, shots.length, 'Every shell of a use has a unique barrel key');
       assert.ok(damages.length > 0, `${id} should hit a centred target`);
       assert.ok(damages.every((damage) => Math.abs(damage - spec.damage) < 1e-6));
-      metrics[id] = { projectiles: shots.length, speed: spec.speed, interval: shooter.fireCooldown, damage: damages[0] };
+      metrics[id] = { projectiles: shots.length, speed: spec.speed, damage: damages[0] };
       system.clear();
     }
-    assert.ok(metrics.scatter.projectiles > metrics.pulse.projectiles, 'Scatter weapon must fire multiple pellets');
-    assert.ok(metrics.rail.speed > metrics.pulse.speed && metrics.rail.damage > metrics.pulse.damage, 'Rail should have a distinct fast, high-damage projectile');
-    assert.ok(metrics.repeater.interval < metrics.pulse.interval, 'Repeater must fire faster than pulse');
-    console.log(`PASS authoritative weapon patterns, projectile speeds/lifetimes, damage and cooldown: ${JSON.stringify(metrics)}`);
+    assert.ok(metrics.shotgun.projectiles > metrics.compound_bow.projectiles, 'Shotgun must fire multiple pellets');
+    assert.ok(metrics.compound_bow.speed > metrics.pistol.speed && metrics.compound_bow.damage > metrics.pistol.damage, 'Bow should be a distinct fast, high-damage projectile');
+    assert.equal(metrics.revolver.projectiles, 6, 'Revolver fans six shots in one use');
+    console.log(`PASS single-use weapons, bursts, projectile speeds/lifetimes and damage: ${JSON.stringify(metrics)}`);
   } finally { shooter.controller.dispose(); target.controller.dispose(); physics.world.free(); }
 }
 

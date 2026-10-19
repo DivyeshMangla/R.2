@@ -54,12 +54,18 @@ import {
   type RobotPhysState,
   type ShotResultMsg,
   type Vec3,
+  type WeaponId,
+  weaponStats,
 } from '@robot-arena/shared';
 import type { GameHost } from '../game/GameHost';
 import { LagCompensator } from '../game/LagCompensator';
 import { PhysicsWorld } from '../game/PhysicsWorld';
 import { ServerRobot } from '../game/ServerRobot';
 import { WeaponSystem } from '../game/WeaponSystem';
+
+/** A plain single-shell, no-spread, no-gravity weapon so client prediction matches the server shell. */
+const AIM_WEAPON: WeaponId = 'flintlock';
+const AIM_SPEED = weaponStats(AIM_WEAPON).speed;
 
 interface Scenario {
   name: string;
@@ -170,7 +176,8 @@ function runScenario(sc: Scenario, rttMs: number): RunResult {
     return r;
   };
   const shooter = mk(1, 'human', sc.shooter, sc.shooterYaw);
-  shooter.weaponId = 'pulse';
+  // Single-use weapons: the harness re-arms before every trigger pull (see the server tick below).
+  shooter.weaponId = AIM_WEAPON;
   const target = mk(2, null, sc.target, sc.moving ? Math.PI / 2 : sc.shooterYaw + Math.PI);
   settle(physics, [shooter, target]);
   const shooterState: RobotPhysState = shooter.controller.getState();
@@ -287,7 +294,7 @@ function runScenario(sc: Scenario, rttMs: number): RunResult {
       if (sc.moving) {
         const base = { ...aimAt };
         for (let it = 0; it < 4; it++) {
-          const tFlight = (Math.hypot(aimAt.x - pivot.x, aimAt.y - pivot.y, aimAt.z - pivot.z) - BARREL_HINGE_FWD - MUZZLE_DISTANCE) / physicsConfig.projectileSpeed;
+          const tFlight = (Math.hypot(aimAt.x - pivot.x, aimAt.y - pivot.y, aimAt.z - pivot.z) - BARREL_HINGE_FWD - MUZZLE_DISTANCE) / AIM_SPEED;
           aimAt.x = base.x + seen.v.x * tFlight;
           aimAt.z = base.z + seen.v.z * tFlight;
         }
@@ -320,9 +327,9 @@ function runScenario(sc: Scenario, rttMs: number): RunResult {
           hit: false,
           state: {
             id: -fseq, owner: 1, pos: { ...spec.origin },
-            vel: { x: spec.dir.x * physicsConfig.projectileSpeed, y: spec.dir.y * physicsConfig.projectileSpeed, z: spec.dir.z * physicsConfig.projectileSpeed },
+            vel: { x: spec.dir.x * AIM_SPEED, y: spec.dir.y * AIM_SPEED, z: spec.dir.z * AIM_SPEED },
             bouncesLeft: 0, age: 0, lifetime: physicsConfig.projectileLifetime, damage: 0, knockback: 0,
-            radius: physicsConfig.projectileRadius, assist: true, dist: 0,
+            radius: weaponStats(AIM_WEAPON).radius, assist: true, dist: 0,
           },
         });
       }
@@ -342,7 +349,10 @@ function runScenario(sc: Scenario, rttMs: number): RunResult {
     if (input) {
       shooter.aimYaw = input.aimYaw;
       shooter.aimPitch = input.aimPitch;
-      if (input.buttons & Buttons.FIRE) weapons.tryFire(shooter, input);
+      if (input.buttons & Buttons.FIRE) {
+        shooter.weaponId = AIM_WEAPON;
+        weapons.tryFire(shooter, input);
+      }
     }
     physics.step();
     // Record the scripted pose exactly (the step nudges bodies by contact/gravity).

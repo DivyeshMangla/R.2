@@ -12,7 +12,8 @@
     "test:bots": "node --import tsx src/test/botHarness.ts",
     "test:maps": "node --import tsx src/test/mapHarness.ts",
     "test:camera": "node --import tsx src/test/cameraHarness.ts",
-    "test:network": "tsx src/test/networkHarness.ts"
+    "test:network": "tsx src/test/networkHarness.ts",
+    "test:lethality": "node --import tsx src/test/lethalityHarness.ts"
   },
   "dependencies": {
     "@colyseus/core": "^0.18.0",

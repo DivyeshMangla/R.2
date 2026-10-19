@@ -132,14 +132,16 @@ try {
   let peakGraph = baseline;
   let peakConnectedVoices = 0;
   const position = new THREE.Vector3(); const camera = new THREE.PerspectiveCamera();
-  const weapons = ['pulse', 'scatter', 'rail', 'repeater'] as const;
+  const weapons = ['pistol', 'shotgun', 'compound_bow', 'revolver', 'rpg', 'tesla_gun', 'flintlock', 'darts', 'twin_cannon', 'syringe'] as const;
   for (let i = 0; i < 600; i++) {
     context!.currentTime = i * 0.04;
     system.updateVehicle({ ...base, forwardSpeed: 8, throttle: 1, lateralSpeed: i % 4, surface: 'desert' });
-    system.cannon(null, null, true, weapons[i % 4]);
-    system.cannon(position, camera, false, 'repeater');
+    system.cannon(null, null, true, weapons[i % weapons.length]);
+    system.cannon(position, camera, false, 'revolver');
     system.impact(position, camera, true); system.debrisClank(position, camera, 8);
-    if (i % 8 === 0) { system.explosion(position, camera); system.hurt(); system.hitMarker(); system.landing(5); }
+    if (i % 8 === 0) { system.explosion(position, camera, i % 16 === 0 ? 2 : 0.5); system.hurt(); system.hitMarker(); system.killConfirm(); system.landing(5); }
+    if (i % 6 === 0) { system.beam(position, camera, false, 1.8); system.swing(position, camera, true, 1.6); system.meleeHit(position, camera, i % 12 === 0 ? 150 : 30); system.zap(position, camera, true, 1.5); }
+    if (i % 10 === 0) { system.heal(position, camera); system.shield(position, camera, i % 20 === 0); system.teleport(position, camera); system.flame(position, camera, 2); system.chainsaw(position, camera, 3); system.deploy(position, camera); system.ignite(position, camera, true); }
     peakGraph = Math.max(peakGraph, connected());
     const connectedVoices = graph.filter((node) => node.kind === 'panner' && node.connected.size > 0).length;
     peakConnectedVoices = Math.max(peakConnectedVoices, connectedVoices);

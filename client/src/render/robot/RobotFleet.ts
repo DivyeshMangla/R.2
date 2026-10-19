@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { CHASSIS_HALF, getCharacter, getMap, getWeapon, physicsConfig, RobotFlags, TWIN_BARREL_OFFSET, WHEEL_ANCHORS, type MapId, type PowerUpStacks, type Vec3 } from '@robot-arena/shared';
+import { heldWeaponScale } from '../WeaponModels';
 import {
   BARREL_MOUNT,
   BARREL_TIP_Z,
@@ -119,7 +120,7 @@ export class RobotFleet {
       this.group.add(mesh);
       this.parts.push({ def, mesh, perRobot });
     }
-    this.ink = new RobotInk(this.parts.map((part) => ({ geometry: part.def.geometry, perRobot: part.perRobot })), MAX_FLEET);
+    this.ink = new RobotInk(this.parts.map((part) => ({ geometry: part.def.geometry, perRobot: part.perRobot, inkAngle: part.def.inkAngle })), MAX_FLEET);
     this.group.add(this.ink.lines);
 
     for (let i = 0; i < MAX_FLEET; i++) {
@@ -246,6 +247,8 @@ export class RobotFleet {
         return m.repair;
       case 'nozzle':
         return m.nozzle;
+      case 'held':
+        return m.held;
     }
   }
 
@@ -557,8 +560,13 @@ export class RobotFleet {
     chunk(new RoundedBoxGeometry(1.84, 0.38, 0.14, 2, 0.04), steelMat(), { x: 0.92, y: 0.19, z: 0.07 }, new THREE.Vector3(0, -0.08, H.z + 0.12));
     const turretPaint = this.partByName.get('turret.paint');
     if (turretPaint) chunk(turretPaint.geometry, paintMat(), { x: 0.48, y: 0.24, z: 0.48 }, new THREE.Vector3(0, TURRET_MOUNT.y, 0));
-    const barrel = this.partByName.get('barrel.single.steel');
-    if (barrel && v.weaponId !== null) chunk(barrel.geometry, steelMat(), { x: 0.12, y: 0.12, z: 0.65 }, new THREE.Vector3(0, TURRET_MOUNT.y + BARREL_MOUNT.y, 0.4));
+    const held = v.weaponId === null ? undefined : this.partByName.get(`weapon.${v.weaponId}.body.single`);
+    if (held) {
+      const heldMat = m.held.clone();
+      heldMat.transparent = true;
+      const hs = heldWeaponScale(v.weaponId!);
+      chunk(held.geometry, heldMat, { x: 0.2 * hs, y: 0.15 * hs, z: 0.5 * hs }, new THREE.Vector3(0, TURRET_MOUNT.y + BARREL_MOUNT.y, 0.4));
+    }
     // Loose wheels: tyre only (one draw call each; the rim is hidden inside it at a distance).
     const tire = this.partByName.get('wheel.tire');
     if (tire) {

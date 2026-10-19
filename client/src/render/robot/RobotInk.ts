@@ -3,6 +3,8 @@ import * as THREE from 'three';
 export interface InkPart {
   geometry: THREE.BufferGeometry;
   perRobot: number;
+  /** Crease threshold in degrees (default 26). */
+  inkAngle?: number;
 }
 
 /** One instanced line draw outlines the whole fleet, using the same part transforms as its meshes. */
@@ -18,7 +20,7 @@ export class RobotInk {
     let stride = 0;
     for (const part of parts) {
       this.offsets.push(stride);
-      const edges = new THREE.EdgesGeometry(part.geometry, 26);
+      const edges = new THREE.EdgesGeometry(part.geometry, part.inkAngle ?? 26);
       const p = edges.getAttribute('position');
       for (let k = 0; k < part.perRobot; k++) {
         for (let i = 0; i < p.count; i++) {

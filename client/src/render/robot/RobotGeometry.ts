@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { BARREL_LENGTH, CHASSIS_HALF, TURRET_HEIGHT, TWIN_BARREL_OFFSET, WHEEL_ANCHORS, physicsConfig, type CharacterId, type MapBiome, type Vec3, type WeaponId } from '@robot-arena/shared';
+import { BARREL_LENGTH, CHASSIS_HALF, TURRET_HEIGHT, TWIN_BARREL_OFFSET, WHEEL_ANCHORS, physicsConfig, type CharacterId, type MapBiome, type Vec3, type WeaponId, WEAPON_IDS } from '@robot-arena/shared';
+import { heldWeaponScale, weaponGeometry, weaponTipZ } from '../WeaponModels';
 
 /** Which transform a part follows. */
 export type SlotKind = 'chassis' | 'turret' | 'barrel' | 'wheel' | 'arm' | 'shock';
@@ -19,6 +20,7 @@ export type PartMaterial =
   | 'rim'
   | 'glass'
   | 'lamps'
+  | 'held'
   | 'emp'
   | 'leech'
   | 'repair'
@@ -45,6 +47,8 @@ export interface PartDef {
   character?: CharacterId;
   weapon?: WeaponId;
   biome?: MapBiome;
+  /** Crease angle (degrees) for the ink outline; default 26. */
+  inkAngle?: number;
 }
 
 /** Turret pivot in chassis space and barrel mount in turret space. */
@@ -252,37 +256,6 @@ function turretParts(): PartDef[] {
   ];
 }
 
-function barrelGeometry(x: number): { steel: THREE.BufferGeometry[]; chrome: THREE.BufferGeometry[] } {
-  const len = BARREL_LENGTH - 0.25;
-  const steel = [
-    place(cyl(0.082, 0.1, len, 18), x, 0, len / 2, Math.PI / 2),
-    place(cyl(0.11, 0.11, 0.18, 18), x, 0, 0.14, Math.PI / 2),
-    place(cyl(0.095, 0.095, 0.06, 18), x, 0, len * 0.55, Math.PI / 2),
-  ];
-  const chrome = [place(cyl(0.12, 0.13, 0.2, 18), x, 0, len + 0.04, Math.PI / 2)];
-  for (const s of [-1, 1]) chrome.push(place(new THREE.BoxGeometry(0.04, 0.06, 0.12), x + s * 0.12, 0, len + 0.04));
-  return { steel, chrome };
-}
-
-function barrelParts(): PartDef[] {
-  const single = barrelGeometry(0);
-  const left = barrelGeometry(-TWIN_BARREL_OFFSET);
-  const right = barrelGeometry(TWIN_BARREL_OFFSET);
-  return [
-    { name: 'barrel.single.steel', slot: 'barrel', material: 'barrel', geometry: merge(single.steel.map((g) => projectUV(g, 0.8))), castShadow: true, variant: 'single' },
-    { name: 'barrel.single.chrome', slot: 'barrel', material: 'chrome', geometry: merge(single.chrome), castShadow: false, variant: 'single' },
-    {
-      name: 'barrel.twin.steel',
-      slot: 'barrel',
-      material: 'barrel',
-      geometry: merge([...left.steel, ...right.steel].map((g) => projectUV(g, 0.8))),
-      castShadow: true,
-      variant: 'twin',
-    },
-    { name: 'barrel.twin.chrome', slot: 'barrel', material: 'chrome', geometry: merge([...left.chrome, ...right.chrome]), castShadow: false, variant: 'twin' },
-  ];
-}
-
 // ---------------------------------------------------------------- wheels & suspension
 
 function tireGeometry(): THREE.BufferGeometry {
@@ -459,42 +432,58 @@ function characterParts(): PartDef[] {
   ];
 }
 
-/** Distinct weapon housings share the same muzzle point and aim transform. */
+/**
+ * Where a held weapon model sits in barrel space at scale 1: its +Z tip lands on
+ * the muzzle point. Kept for reference; each weapon is now scaled by
+ * `heldWeaponScale` (from its sizeMul) about that tip, see heldWeaponMatrix.
+ */
+export const HELD_WEAPON_OFFSET = new THREE.Vector3(0, 0.02, BARREL_TIP_Z - 0.5);
+/** Twin-barrel upgrade: two slightly smaller copies side by side. */
+const TWIN_HELD_SCALE = 0.8;
+
+/**
+ * Barrel-space placement of a held weapon: scaled up by its sizeMul (clamped),
+ * lifted a touch as it grows so grips clear the hull, and translated so the
+ * model's real front-most point stays exactly on BARREL_TIP_Z (muzzle flashes
+ * and projectile spawns line up for every size).
+ */
+export function heldWeaponMatrix(id: WeaponId, out = new THREE.Matrix4()): THREE.Matrix4 {
+  const scale = heldWeaponScale(id);
+  const lift = HELD_WEAPON_OFFSET.y + (scale - 1) * 0.25;
+  return out.compose(
+    new THREE.Vector3(0, lift, BARREL_TIP_Z - weaponTipZ(id) * scale),
+    new THREE.Quaternion(),
+    new THREE.Vector3(scale, scale, scale),
+  );
+}
+
+/**
+ * The picked-up weapon itself rides the turret in place of a generic barrel:
+ * one vertex-coloured body part + one glow part per WeaponId (see WeaponModels).
+ * Only the part matching `RobotVisual.weaponId` is drawn.
+ */
 function weaponParts(): PartDef[] {
   const result: PartDef[] = [];
-  const tip = BARREL_TIP_Z - 0.12;
-  for (const weapon of ['pulse', 'scatter', 'rail', 'repeater'] as const) {
-    const shell: THREE.BufferGeometry[] = [];
-    const glow: THREE.BufferGeometry[] = [];
-    switch (weapon) {
-      case 'pulse':
-        for (const z of [0.42, 0.7, 0.98]) glow.push(place(new THREE.TorusGeometry(0.135, 0.025, 6, 20), 0, 0, z));
-        shell.push(place(rbox(0.28, 0.24, 0.48, 0.035), 0, 0, 0.36));
-        break;
-      case 'scatter':
-        shell.push(place(rbox(0.4, 0.3, 0.66, 0.05), 0, 0, 0.86));
-        for (const x of [-0.13, 0, 0.13]) glow.push(place(cyl(0.045, 0.045, 0.07, 10), x, 0, tip, Math.PI / 2));
-        break;
-      case 'rail':
-        for (const s of [-1, 1]) {
-          shell.push(place(rbox(0.075, 0.19, 1.08, 0.018), s * 0.155, 0, 0.73));
-          glow.push(place(new THREE.BoxGeometry(0.025, 0.055, 0.95), s * 0.115, 0.06, 0.76));
-        }
-        shell.push(place(rbox(0.2, 0.12, 0.33, 0.02), 0, 0.2, 0.2));
-        break;
-      case 'repeater':
-        shell.push(place(cyl(0.25, 0.25, 0.36, 12), 0, -0.06, 0.38, Math.PI / 2));
-        for (let i = 0; i < 4; i++) {
-          const a = i * Math.PI / 2;
-          shell.push(place(cyl(0.04, 0.04, 0.65, 10), Math.cos(a) * 0.13, Math.sin(a) * 0.13, 0.94, Math.PI / 2));
-          glow.push(place(cyl(0.04, 0.04, 0.035, 10), Math.cos(a) * 0.13, Math.sin(a) * 0.13, tip, Math.PI / 2));
-        }
-        break;
-    }
-    for (const [material, geos] of [['barrel', shell], ['weapon', glow]] as const) {
-      const geometry = merge(geos);
-      result.push({ name: `weapon.${weapon}.${material}.single`, weapon, slot: 'barrel', material, geometry, castShadow: material === 'barrel', variant: 'single' });
-      result.push({ name: `weapon.${weapon}.${material}.twin`, weapon, slot: 'barrel', material, geometry, castShadow: material === 'barrel', variant: 'twin', locals: [new THREE.Matrix4().makeTranslation(-TWIN_BARREL_OFFSET, 0, 0), new THREE.Matrix4().makeTranslation(TWIN_BARREL_OFFSET, 0, 0)] });
+  const twinLocals = [-1, 1].map((s) => new THREE.Matrix4().compose(
+    // Shrink about the muzzle tip so twin copies still end at BARREL_TIP_Z.
+    new THREE.Vector3(s * (TWIN_BARREL_OFFSET + 0.06), 0, BARREL_TIP_Z * (1 - TWIN_HELD_SCALE)),
+    new THREE.Quaternion(),
+    new THREE.Vector3(TWIN_HELD_SCALE, TWIN_HELD_SCALE, TWIN_HELD_SCALE),
+  ));
+  for (const weapon of WEAPON_IDS) {
+    const geo = weaponGeometry(weapon);
+    const placement = heldWeaponMatrix(weapon);
+    const parts: [PartMaterial, THREE.BufferGeometry | null][] = [['held', geo.body], ['lamps', geo.glow]];
+    for (const [material, source] of parts) {
+      if (!source) continue;
+      const geometry = source.clone().applyMatrix4(placement);
+      geometry.computeBoundingSphere();
+      const kind = material === 'held' ? 'body' : 'glow';
+      // Low-poly rounds would ink every facet at the default 26°; only outline real creases.
+      const inkAngle = material === 'held' ? 50 : 91;
+      const castShadow = material === 'held';
+      result.push({ name: `weapon.${weapon}.${kind}.single`, weapon, slot: 'barrel', material, geometry, castShadow, variant: 'single', inkAngle });
+      result.push({ name: `weapon.${weapon}.${kind}.twin`, weapon, slot: 'barrel', material, geometry, castShadow, variant: 'twin', inkAngle, locals: twinLocals });
     }
   }
   return result;
@@ -583,7 +572,7 @@ function biomeParts(): PartDef[] {
 }
 
 export function buildRobotParts(): PartDef[] {
-  return [...chassisParts(), rivetPart(), ...turretParts(), ...barrelParts(), ...wheelParts(), ...suspensionParts(), ...addonParts(), ...characterParts(), ...weaponParts(), ...biomeParts()];
+  return [...chassisParts(), rivetPart(), ...turretParts(), ...wheelParts(), ...suspensionParts(), ...addonParts(), ...characterParts(), ...weaponParts(), ...biomeParts()];
 }
 
 /** Chassis-space mount points for the suspension links (lower arm + shock top). */

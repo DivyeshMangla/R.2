@@ -1,6 +1,14 @@
 import * as THREE from 'three';
-import { getMap, getPowerUp, MAX_LEVEL, RARITY_COLORS, type CardOfferMsg, type MapId, type PlayerInfo, type PowerUpId, type PowerUpStacks, type ResultsMsg } from '@robot-arena/shared';
+import { getMap, getPowerUp, MAX_LEVEL, RARITY_COLORS, type CardOfferMsg, type MapId, type PlayerInfo, type PowerUpId, type PowerUpStacks, type ResultsMsg, type WeaponDef } from '@robot-arena/shared';
 import './styles.css';
+import { estimateDamage, ONE_SHOT_DAMAGE, weaponIcon, weaponSummary } from './weaponInfo';
+
+/** Weapon credited with a kill-feed line: a real weapon, or a plain cause such as a ram. */
+export interface KillWeapon {
+  name: string;
+  color: number;
+  icon: string;
+}
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', parent?: HTMLElement, text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -30,12 +38,15 @@ export interface AbilityDisplay {
   key: string;
 }
 
+export type NumberKind = 'dealt' | 'crit' | 'mega' | 'taken' | 'heal';
+
 interface DamageNumber {
   node: HTMLDivElement;
   world: THREE.Vector3;
   age: number;
   life: number;
   drift: number;
+  mega?: boolean;
 }
 
 const tmp = new THREE.Vector3();
@@ -81,12 +92,25 @@ export class UI {
   private readonly mapName: HTMLDivElement;
   private readonly biomeLabel: HTMLDivElement;
   private weaponLabel = '';
+  private readonly toastEl: HTMLDivElement;
+  private readonly toastTitle: HTMLDivElement;
+  private readonly toastSub: HTMLDivElement;
+  private toastT = 0;
   private readonly hitArcs: { node: HTMLDivElement; t: number }[] = [];
   private nextArc = 0;
   private readonly killBanner: HTMLDivElement;
   private readonly killBannerName: HTMLDivElement;
   private readonly killBannerSub: HTMLDivElement;
+  private readonly killBannerTag: HTMLDivElement;
+  private readonly killBannerWeapon: HTMLDivElement;
   private killBannerT = 0;
+  private readonly killFlashEl: HTMLDivElement;
+  private killFlashT = 0;
+  private readonly splashEl: HTMLDivElement;
+  private readonly splashName: HTMLDivElement;
+  private readonly splashPower: HTMLSpanElement;
+  private readonly splashSummary: HTMLDivElement;
+  private splashT = 0;
   private readonly dmgNumbers: DamageNumber[] = [];
   private hitTimer = 0;
   private flashTimer = 0;
@@ -105,6 +129,7 @@ export class UI {
     this.hud = el('div', 'hud', document.body);
 
     this.damageFlashEl = el('div', 'damage-flash', this.hud);
+    this.killFlashEl = el('div', 'kill-flash', this.hud);
     this.lowHpEl = el('div', 'low-hp-vignette', this.hud);
     this.numbers = el('div', '', this.hud);
 
@@ -146,6 +171,9 @@ export class UI {
     this.netInfo = el('div', 'net-info', this.hud);
     this.weaponHud = el('div', 'weapon-hud', this.hud);
     this.pickupPrompt = el('div', 'pickup-prompt', this.hud);
+    this.toastEl = el('div', 'weapon-toast', this.hud);
+    this.toastTitle = el('div', 'title', this.toastEl);
+    this.toastSub = el('div', 'sub', this.toastEl);
     this.driveFeedback = el('div', 'drive-feedback panel', this.hud);
     const speedRow = el('div', 'drive-speed-row', this.driveFeedback);
     this.driveSpeed = el('span', 'drive-speed', speedRow, '0');
@@ -157,9 +185,15 @@ export class UI {
     const arcs = el('div', 'hit-indicator', this.hud);
     for (let i = 0; i < 4; i++) this.hitArcs.push({ node: el('div', 'hit-arc', arcs), t: 0 });
     this.killBanner = el('div', 'kill-banner', this.hud);
-    el('div', 'tag', this.killBanner, 'ELIMINATED');
+    this.killBannerTag = el('div', 'tag', this.killBanner, 'ELIMINATED');
     this.killBannerName = el('div', 'name', this.killBanner);
+    this.killBannerWeapon = el('div', 'weapon', this.killBanner);
     this.killBannerSub = el('div', 'sub', this.killBanner);
+    this.splashEl = el('div', 'weapon-splash', this.hud);
+    const splashHead = el('div', 'head', this.splashEl);
+    this.splashName = el('div', 'name', splashHead);
+    this.splashPower = el('span', 'power', splashHead);
+    this.splashSummary = el('div', 'summary', this.splashEl);
 
     this.cards = el('div', 'cards', this.hud);
     el('div', 'title', this.cards, 'LEVEL UP — CHOOSE AN UPGRADE');
@@ -183,7 +217,7 @@ export class UI {
       ['<kbd>A</kbd> / <kbd>D</kbd>', 'Steer the front wheels'],
       ['<kbd>Mouse</kbd>', 'Aim turret'],
       ['<kbd>RMB</kbd> / <kbd>C</kbd>', 'Hold view / recenter behind robot'],
-      ['<kbd>LMB</kbd>', 'Fire cannon'],
+      ['<kbd>LMB</kbd>', 'Use weapon (single use)'],
       ['<kbd>Shift</kbd>', 'Boost'],
       ['<kbd>Space</kbd>', 'Ability (from power-ups)'],
       ['<kbd>1</kbd><kbd>2</kbd><kbd>3</kbd>', 'Pick level-up card'],
@@ -224,14 +258,60 @@ export class UI {
     this.hud.style.display = visible ? '' : 'none';
   }
 
-  setWeapon(name: string, role: string): void {
-    const label = `${name}|${role}`;
-    if (label === this.weaponLabel) return;
+  /** Equipped single-use weapon card (big, in the weapon's colour), or the unarmed hint. */
+  setWeapon(weapon: Readonly<WeaponDef> | null): void {
+    const label = weapon ? `${weapon.id}:${weapon.kind}:${weapon.power}` : '';
+    if (label === this.weaponLabel && this.weaponHud.childElementCount > 0) return;
     this.weaponLabel = label;
     this.weaponHud.textContent = '';
-    el('small', '', this.weaponHud, 'EQUIPPED WEAPON');
-    el('strong', '', this.weaponHud, name);
-    el('small', '', this.weaponHud, role);
+    this.weaponHud.classList.toggle('unarmed', !weapon);
+    this.weaponHud.classList.remove('armed-pop');
+    if (!weapon) {
+      this.weaponHud.style.removeProperty('--weapon-color');
+      el('small', '', this.weaponHud, 'NO WEAPON');
+      el('strong', '', this.weaponHud, 'UNARMED');
+      el('small', 'weapon-hint', this.weaponHud, 'Drive over a weapon pad');
+      return;
+    }
+    this.weaponHud.style.setProperty('--weapon-color', hex(weapon.color));
+    const head = el('div', 'weapon-head', this.weaponHud);
+    el('span', 'weapon-chip', head, weaponIcon(weapon));
+    el('small', '', head, 'EQUIPPED');
+    el('span', 'weapon-uses', head, '1 USE');
+    el('strong', '', this.weaponHud, weapon.name);
+    const tags = el('div', 'weapon-tags', this.weaponHud);
+    el('span', 'weapon-power', tags, weapon.power);
+    if (estimateDamage(weapon) >= ONE_SHOT_DAMAGE) el('span', 'weapon-lethal', tags, 'ONE-SHOT');
+    el('small', '', tags, weapon.role);
+    el('div', 'weapon-summary', this.weaponHud, weaponSummary(weapon));
+    el('div', 'weapon-desc', this.weaponHud, weapon.description);
+    void this.weaponHud.offsetWidth;
+    this.weaponHud.classList.add('armed-pop');
+  }
+
+  /** Big centre splash when a weapon is picked up: "RPG — EXPLODE" over a one-line summary. */
+  weaponSplash(weapon: Readonly<WeaponDef>): void {
+    this.splashEl.style.setProperty('--weapon-color', hex(weapon.color));
+    this.splashName.textContent = `${weapon.name.toUpperCase()} —`;
+    this.splashPower.textContent = weapon.power;
+    this.splashSummary.textContent = weaponSummary(weapon);
+    this.splashEl.classList.remove('show');
+    void this.splashEl.offsetWidth;
+    this.splashEl.classList.add('show');
+    this.splashT = 2.4;
+  }
+
+  /** Short centre-low banner (weapon picked up / spent / disarmed). */
+  toast(title: string, sub = '', color: number | null = null, tone: 'info' | 'warn' = 'info'): void {
+    this.toastTitle.textContent = title;
+    this.toastSub.textContent = sub;
+    this.toastEl.classList.toggle('warn', tone === 'warn');
+    if (color !== null) this.toastEl.style.setProperty('--toast-color', hex(color));
+    else this.toastEl.style.removeProperty('--toast-color');
+    this.toastEl.classList.remove('show');
+    void this.toastEl.offsetWidth;
+    this.toastEl.classList.add('show');
+    this.toastT = sub ? 2.6 : 1.6;
   }
 
   setPickupPrompt(text: string): void {
@@ -311,7 +391,7 @@ export class UI {
 
   // ------------------------------------------------------------- feed & scores
 
-  addKill(killer: PlayerInfo | undefined, victim: PlayerInfo | undefined, assists: PlayerInfo[], involvesMe: boolean): void {
+  addKill(killer: PlayerInfo | undefined, victim: PlayerInfo | undefined, assists: PlayerInfo[], involvesMe: boolean, weapon: KillWeapon | null = null): void {
     const row = el('div', `kill panel${involvesMe ? ' me' : ''}`, this.killfeed);
     const name = (p: PlayerInfo | undefined, fallback: string): HTMLSpanElement => {
       const s = el('span', '', row, p ? p.name : fallback);
@@ -319,7 +399,12 @@ export class UI {
       return s;
     };
     if (killer && killer !== victim) name(killer, '');
-    el('span', 'icon', row, killer ? '✖' : '☠');
+    if (weapon) {
+      const chip = el('span', 'kill-weapon', row);
+      chip.style.setProperty('--weapon-color', hex(weapon.color));
+      el('span', 'glyph', chip, weapon.icon);
+      el('span', 'wname', chip, weapon.name);
+    } else el('span', 'icon', row, killer ? '✖' : '☠');
     name(victim, 'Unknown');
     if (assists.length) el('span', 'assist', row, `+ ${assists.map((a) => a.name).join(', ')}`);
     while (this.killfeed.children.length > 6) this.killfeed.firstElementChild?.remove();
@@ -403,7 +488,10 @@ export class UI {
     a.node.classList.add('show');
   }
 
-  showKillBanner(name: string, color: number, sub: string): void {
+  showKillBanner(name: string, color: number, sub: string, weapon: KillWeapon | null = null, tag = 'ELIMINATED'): void {
+    this.killBannerTag.textContent = tag;
+    this.killBannerWeapon.textContent = weapon ? `${weapon.icon}  ${weapon.name.toUpperCase()} KILL` : '';
+    this.killBanner.style.setProperty('--weapon-color', hex(weapon ? weapon.color : color));
     this.killBannerName.textContent = name;
     this.killBannerName.style.color = hex(color);
     this.killBannerSub.textContent = sub;
@@ -411,7 +499,16 @@ export class UI {
     // Restart the CSS animation.
     void this.killBanner.offsetWidth;
     this.killBanner.classList.add('show');
-    this.killBannerT = 2.2;
+    this.killBannerT = 2.6;
+  }
+
+  /** Full-screen flash tinted by the killing weapon (own kills). */
+  killFlash(color: number): void {
+    this.killFlashEl.style.setProperty('--flash-color', hex(color));
+    this.killFlashEl.classList.remove('show');
+    void this.killFlashEl.offsetWidth;
+    this.killFlashEl.classList.add('show');
+    this.killFlashT = 0.5;
   }
 
   setCenterMessage(text: string, small = '', countdown = false): void {
@@ -431,7 +528,13 @@ export class UI {
   }
 
   setStunned(v: boolean): void {
-    this.statusTag.classList.toggle('show', v);
+    this.setStatusTag(v ? 'STUNNED' : '');
+  }
+
+  /** Active status effects on the local robot, e.g. "STUNNED · BURNING"; empty hides the tag. */
+  setStatusTag(text: string): void {
+    if (this.statusTag.textContent !== text && text) this.statusTag.textContent = text;
+    this.statusTag.classList.toggle('show', !!text);
   }
 
   damageFlash(): void {
@@ -441,9 +544,10 @@ export class UI {
 
   // ------------------------------------------------------------- damage numbers
 
-  spawnNumber(world: THREE.Vector3, text: string, kind: 'dealt' | 'crit' | 'taken' | 'heal'): void {
+  spawnNumber(world: THREE.Vector3, text: string, kind: NumberKind): void {
     const node = el('div', `dmg-num${kind === 'dealt' ? '' : ` ${kind}`}`, this.numbers, text);
-    this.dmgNumbers.push({ node, world: world.clone().add(new THREE.Vector3(0, 1.4, 0)), age: 0, life: 0.95, drift: (Math.random() - 0.5) * 40 });
+    const mega = kind === 'mega';
+    this.dmgNumbers.push({ node, world: world.clone().add(new THREE.Vector3(0, mega ? 2 : 1.4, 0)), age: 0, life: mega ? 1.5 : 0.95, drift: (Math.random() - 0.5) * (mega ? 20 : 40), mega });
     while (this.dmgNumbers.length > 40) {
       const old = this.dmgNumbers.shift();
       old?.node.remove();
@@ -541,6 +645,18 @@ export class UI {
       this.killBannerT -= dt;
       if (this.killBannerT <= 0) this.killBanner.classList.remove('show');
     }
+    if (this.splashT > 0) {
+      this.splashT -= dt;
+      if (this.splashT <= 0) this.splashEl.classList.remove('show');
+    }
+    if (this.killFlashT > 0) {
+      this.killFlashT -= dt;
+      if (this.killFlashT <= 0) this.killFlashEl.classList.remove('show');
+    }
+    if (this.toastT > 0) {
+      this.toastT -= dt;
+      if (this.toastT <= 0) this.toastEl.classList.remove('show');
+    }
     if (this.flashTimer > 0) {
       this.flashTimer -= dt;
       if (this.flashTimer <= 0) this.damageFlashEl.classList.remove('show');
@@ -569,7 +685,10 @@ export class UI {
       }
       const x = (tmp.x * 0.5 + 0.5) * width + d.drift * t;
       const y = (-tmp.y * 0.5 + 0.5) * height - t * 60;
-      const scale = t < 0.15 ? 0.6 + (t / 0.15) * 0.7 : 1.3 - (t - 0.15) * 0.4;
+      // Mega hits slam in oversized, then settle; normal numbers pop and shrink.
+      const scale = d.mega
+        ? (t < 0.1 ? 2.6 - (t / 0.1) * 1.2 : 1.4 - (t - 0.1) * 0.25)
+        : t < 0.15 ? 0.6 + (t / 0.15) * 0.7 : 1.3 - (t - 0.15) * 0.4;
       d.node.style.opacity = String(t < 0.7 ? 1 : 1 - (t - 0.7) / 0.3);
       d.node.style.transform = `translate(-50%, -50%) translate(${x}px, ${y}px) scale(${scale})`;
       d.node.style.left = '0';

@@ -14,14 +14,14 @@ async function main(): Promise<void> {
   let lineOfSight = true;
   physics.lineOfSight = () => lineOfSight;
   physics.rayEnvironment = () => null;
-  let pads: WeaponPickupState[] = [{ id: 0, weaponId: 'pulse', position: { x: -65, y: 0, z: -50 }, available: true, respawnIn: 0 }];
+  let pads: WeaponPickupState[] = [{ id: 0, weaponId: 'pistol', position: { x: -65, y: 0, z: -50 }, available: true, respawnIn: 0 }];
   const view: BotWorldView = { physics, spawnPoints: [{ position: { x: -65, y: 1, z: -65 }, yaw: 0 }], robots: () => [bot, human], pickupSnapshot: () => pads };
   const run = (ai: BotAI, seconds: number) => Array.from({ length: Math.round(seconds / FIXED_DT) }, () => ai.think(bot, view, FIXED_DT));
   const noFire = (frames: ReturnType<typeof run>, description: string) => assert.ok(frames.every((f) => (f.buttons & Buttons.FIRE) === 0), description);
   try {
-    human.weaponId = 'pulse';
+    human.weaponId = 'pistol';
     noFire(run(new BotAI(() => 0.25), 5), 'Unarmed bots cannot attack');
-    bot.weaponId = 'pulse';
+    bot.weaponId = 'pistol';
     bot.protectTimer = 6;
     noFire(run(new BotAI(() => 0.25), 5), 'Newly spawned bots should not attack during protection');
     bot.protectTimer = 0;
@@ -30,7 +30,7 @@ async function main(): Promise<void> {
     human.protectTimer = 0;
     human.weaponId = null;
     noFire(run(new BotAI(() => 0.25), 5), 'Unarmed humans must not be targeted');
-    human.weaponId = 'pulse';
+    human.weaponId = 'pistol';
     human.controller.teleport({ x: -65, y: 1, z: -35 }, 0);
     noFire(run(new BotAI(() => 0.25), 5), 'Bots must not acquire distant humans');
     human.controller.teleport({ x: -65, y: 1, z: -50 }, 0);
@@ -50,7 +50,7 @@ async function main(): Promise<void> {
     lineOfSight = true;
     noFire(run(reacquire, 1), 'Reappearing target needs a new acquisition window');
     assert.ok(run(reacquire, 0.5).some((f) => f.buttons & Buttons.FIRE));
-    otherBot.weaponId = 'pulse';
+    otherBot.weaponId = 'pistol';
     human.weaponId = null;
     view.robots = () => [bot, human, otherBot];
     assert.ok(run(new BotAI(() => 0.25), 2).some((f) => f.buttons & Buttons.FIRE), 'Armed bots can still engage each other');

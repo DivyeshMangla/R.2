@@ -1,8 +1,9 @@
-import type { GameEvent, Vec3 } from '@robot-arena/shared';
+import type { DamageCauseWire, GameEvent, Vec3 } from '@robot-arena/shared';
 import type { PhysicsWorld } from './PhysicsWorld';
 import type { ServerRobot } from './ServerRobot';
 
-export type DamageCause = 'projectile' | 'ram' | 'mine';
+/** 'projectile' damage is reported through shot/impact events; every other cause emits a `dmg` event. */
+export type DamageCause = 'projectile' | DamageCauseWire;
 
 /** The services the simulation exposes to its subsystems. */
 export interface GameHost {

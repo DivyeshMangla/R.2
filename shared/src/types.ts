@@ -1,7 +1,7 @@
 import type { PhysicsConfig } from './physicsConfig';
 import type { PowerUpId, PowerUpStacks } from './powerups';
 import type { Quat, Vec3 } from './math';
-import type { CharacterId, WeaponId } from './loadout';
+import type { CharacterId, StatusEffect, WeaponId, ZoneKind } from './loadout';
 import type { MapId, WeaponPad } from './maps';
 
 // ---------------------------------------------------------------------------
@@ -87,6 +87,10 @@ export const RobotFlags = {
   BOOSTING: 4,
   PROTECTED: 8,
   BOT: 16,
+  BURNING: 32,
+  POISONED: 64,
+  SLOWED: 128,
+  SHIELDED: 256,
 } as const;
 
 export interface RobotNetState {
@@ -296,7 +300,7 @@ export type GameEvent =
   | { k: 'shot'; pid: number; owner: number; p: Vec3; v: Vec3; bounces: number; seq: number; b: number; ff: number; weaponId?: WeaponId; lifetime?: number }
   | { k: 'impact'; pid: number; p: Vec3; n: Vec3; target: number; dmg: number; owner: number }
   | { k: 'bounce'; pid: number; p: Vec3; v: Vec3 }
-  | { k: 'dmg'; target: number; source: number; amount: number; p: Vec3; cause: 'ram' | 'mine' }
+  | { k: 'dmg'; target: number; source: number; amount: number; p: Vec3; cause: DamageCauseWire }
   | { k: 'heal'; target: number; amount: number; from?: number }
   | { k: 'death'; id: number; p: Vec3; q: Quat; v: Vec3; killer: number }
   | { k: 'kill'; killer: number; victim: number; assists: number[] }
@@ -309,7 +313,29 @@ export type GameEvent =
   | { k: 'mineBoom'; mid: number; p: Vec3; owner: number }
   | { k: 'ram'; a: number; b: number; p: Vec3; speed: number }
   | { k: 'tune'; key: string; value: number }
-  | { k: 'matchStart' };
+  | { k: 'matchStart' }
+  /** Any weapon activation (melee swing, cone start, pulse, self buff, deploy, shot). The weapon is spent after this use. */
+  | { k: 'use'; id: number; weaponId: WeaponId; p: Vec3; yaw: number; pitch: number }
+  /** Instant hitscan ray (ray gun). `target` -1 = wall/miss. */
+  | { k: 'beam'; owner: number; weaponId: WeaponId; from: Vec3; to: Vec3; target: number }
+  /** Area explosion (RPG, firework, molotov/acid shatter). */
+  | { k: 'explode'; owner: number; weaponId: WeaponId; p: Vec3; r: number }
+  /** A lingering hazard zone appeared; clients expire it after `dur` seconds. */
+  | { k: 'zone'; zid: number; owner: number; kind: ZoneKind; p: Vec3; r: number; dur: number }
+  /** Chain lightning path: shooter impact -> each jumped robot. */
+  | { k: 'chain'; owner: number; pts: Vec3[] }
+  /** Robot moved instantly (storm kunai, katana dash). */
+  | { k: 'teleport'; id: number; from: Vec3; to: Vec3 }
+  /** Status effect applied to a robot. */
+  | { k: 'status'; target: number; effect: StatusEffect; dur: number }
+  /** Shield gained (amount > 0) or broken (amount 0). */
+  | { k: 'shield'; id: number; amount: number }
+  /** A melee / dash / cone hit landed on `target`. */
+  | { k: 'melee'; owner: number; target: number; weaponId: WeaponId; p: Vec3; dmg: number }
+  /** `victim` lost its weapon to a disarm. */
+  | { k: 'disarm'; owner: number; victim: number };
+
+export type DamageCauseWire = 'ram' | 'mine' | 'melee' | 'blast' | 'beam' | 'burn' | 'poison' | 'zone';
 
 export type ShotMissReason =
   | 'hit'

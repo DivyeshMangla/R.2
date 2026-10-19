@@ -1,11 +1,28 @@
 import * as THREE from 'three';
-import type { WeaponId } from '@robot-arena/shared';
+import { getWeapon, type WeaponId } from '@robot-arena/shared';
 import { AudioVoiceBudget, VehicleAudioModel, type VehicleAudioInput } from './VehicleAudioModel';
+import { weaponWeight } from '../ui/weaponInfo';
 
 interface LoopLayer { source: AudioBufferSourceNode; filter: BiquadFilterNode; gain: GainNode }
 interface Voice {
   id: number; until: number; ui: boolean; input: GainNode; nodes: AudioNode[]; sources: AudioScheduledSourceNode[];
   timer: ReturnType<typeof setTimeout>;
+}
+
+export type WeaponSoundFamily = 'light' | 'heavy' | 'spread' | 'bow' | 'throw' | 'rocket' | 'electric';
+
+/** Groups the arsenal's ranged weapons into a handful of procedural shot voices. */
+export function weaponFamily(weaponId: WeaponId): WeaponSoundFamily {
+  switch (weaponId) {
+    case 'flintlock': case 'twin_cannon': return 'heavy';
+    case 'shotgun': case 'blunderbuss': return 'spread';
+    case 'crossbow': case 'compound_bow': return 'bow';
+    case 'darts': case 'cleaver': case 'storm_kunai': case 'molotov': case 'acid_vial': return 'throw';
+    case 'rpg': case 'firework': return 'rocket';
+    case 'tesla_gun': case 'stun_pistol': case 'ray_gun': case 'taser': return 'electric';
+    case 'pistol': case 'revolver': return 'light';
+    default: return getWeapon(weaponId).kind === 'lob' ? 'throw' : 'light';
+  }
 }
 
 /** Recorded engine texture, physical vehicle layers, and bounded spatial combat Foley. */
@@ -227,32 +244,200 @@ export class AudioSystem {
     source.start(t); source.stop(t + dur + 0.025);
   }
 
-  cannon(pos: THREE.Vector3 | null, camera: THREE.Camera | null, local: boolean, weaponId: WeaponId = 'pulse'): void {
+  cannon(pos: THREE.Vector3 | null, camera: THREE.Camera | null, local: boolean, weaponId: WeaponId = 'pistol'): void {
+    const family = weaponFamily(weaponId);
+    // Bigger, deadlier weapons are louder, lower and get a sub-bass kick.
+    const weight = weaponWeight(weaponId);
     const { gain, pan } = this.spatial(pos, camera);
-    const volume = weaponId === 'repeater' ? 0.3 : weaponId === 'scatter' ? 0.6 : 0.48;
-    const dest = this.out(gain * volume * (local ? 1 : 0.6), pan, local ? 'local-shot' : 'remote-shot', 0.5, local ? 4 : 2, local ? 0.035 : 0.025);
+    const volume = family === 'light' ? 0.34 : family === 'spread' ? 0.6 : family === 'heavy' ? 0.62 : family === 'bow' || family === 'throw' ? 0.4 : 0.5;
+    const dest = this.out(Math.min(1, gain * volume * weight * (local ? 1 : 0.6)), pan, local ? 'local-shot' : 'remote-shot', 0.6 + 0.25 * (weight - 0.75), local ? 4 : 2, local ? 0.035 : 0.025);
     if (!dest || !this.ctx) return;
     const t = this.ctx.currentTime;
-    const variation = 0.94 + Math.random() * 0.12;
-    if (weaponId === 'repeater') {
-      this.tone(dest, t, 145 * variation, 58, 0.085, 0.7);
-      this.noiseBurst(dest, t, 0.07, 'bandpass', 2100, 650, 0.6, 0.8);
-      this.noiseBurst(dest, t + 0.04, 0.065, 'bandpass', 670, 280, 0.7, 0.22);
-    } else if (weaponId === 'rail') {
-      this.noiseBurst(dest, t, 0.055, 'highpass', 2900, 1200, 0.55, 0.7);
-      this.tone(dest, t, 105 * variation, 31, 0.26, 0.95);
-      this.noiseBurst(dest, t + 0.025, 0.3, 'bandpass', 1200, 180, 0.7, 0.7);
-      this.tone(dest, t + 0.008, 520 * variation, 220, 0.12, 0.12, 'triangle');
-    } else if (weaponId === 'scatter') {
-      this.tone(dest, t, 100 * variation, 35, 0.24, 1);
-      this.noiseBurst(dest, t, 0.21, 'lowpass', 3200, 300, 0.55, 1.05);
-      this.noiseBurst(dest, t + 0.12, 0.12, 'bandpass', 1200, 450, 0.6, 0.18);
-    } else {
-      this.tone(dest, t, 145 * variation, 42, 0.2, 0.95);
-      this.noiseBurst(dest, t, 0.14, 'lowpass', 3100, 380, 0.6, 0.85);
-      this.noiseBurst(dest, t + 0.09, 0.08, 'bandpass', 800, 280, 0.6, 0.15);
+    const v = (0.94 + Math.random() * 0.12) / Math.sqrt(weight);
+    if (weight > 1.1) this.tone(dest, t, 62 / weight, 24, 0.22 + 0.2 * (weight - 1), Math.min(1, 0.45 * weight));
+    switch (family) {
+      case 'light': // pistol, revolver: snappy crack
+        this.tone(dest, t, 160 * v, 60, 0.09, 0.7);
+        this.noiseBurst(dest, t, 0.07, 'bandpass', 2300, 700, 0.6, 0.85);
+        this.noiseBurst(dest, t + 0.04, 0.07, 'bandpass', 700, 280, 0.7, 0.22);
+        break;
+      case 'heavy': // flintlock, twin cannon: deep boom with powder tail
+        this.tone(dest, t, 95 * v, 30, 0.3, 1);
+        this.noiseBurst(dest, t, 0.26, 'lowpass', 2800, 220, 0.6, 1.05);
+        this.noiseBurst(dest, t + 0.1, 0.25, 'bandpass', 900, 200, 0.6, 0.3);
+        break;
+      case 'spread': // shotgun, blunderbuss
+        this.tone(dest, t, 100 * v, 35, 0.24, 1);
+        this.noiseBurst(dest, t, 0.21, 'lowpass', 3200, 300, 0.55, 1.05);
+        this.noiseBurst(dest, t + 0.12, 0.12, 'bandpass', 1200, 450, 0.6, 0.18);
+        break;
+      case 'bow': // crossbow, compound bow: string twang + air
+        this.tone(dest, t, 230 * v, 140, 0.16, 0.55, 'triangle');
+        this.tone(dest, t, 460 * v, 300, 0.08, 0.18, 'triangle');
+        this.noiseBurst(dest, t + 0.01, 0.18, 'highpass', 3000, 1400, 0.55, 0.5);
+        break;
+      case 'throw': // darts, cleaver, kunai, molotov, acid vial: whoosh
+        this.noiseBurst(dest, t, 0.24, 'bandpass', 600, 2200, 0.55, 0.85);
+        this.tone(dest, t, 180 * v, 320, 0.12, 0.12, 'triangle');
+        break;
+      case 'rocket': // rpg, firework: ignition thump + hissing exhaust
+        this.tone(dest, t, 85 * v, 40, 0.25, 0.8);
+        this.noiseBurst(dest, t, 0.55, 'bandpass', 1800, 500, 0.6, 0.9);
+        this.noiseBurst(dest, t + 0.05, 0.4, 'highpass', 4000, 2000, 0.55, 0.3);
+        break;
+      case 'electric': // tesla gun, stun pistol: crackling zap
+        this.tone(dest, t, 900 * v, 180, 0.18, 0.25, 'sawtooth');
+        this.noiseBurst(dest, t, 0.16, 'highpass', 3500, 1500, 0.6, 0.7);
+        this.tone(dest, t, 120, 60, 0.12, 0.45);
+        break;
     }
-    if (local) this.duck(weaponId === 'repeater' ? 0.8 : 0.68);
+    if (local) this.duck(family === 'light' && weight < 1.1 ? 0.8 : weight > 1.3 ? 0.55 : 0.68);
+  }
+
+  /** Ray gun beam: bright sci-fi zap with a falling sweep. */
+  beam(pos: THREE.Vector3 | null, camera: THREE.Camera | null, local: boolean, weight = 1): void {
+    const w = Math.max(0.75, Math.min(1.8, weight));
+    const { gain, pan } = this.spatial(pos, camera);
+    const dest = this.out(Math.min(1, gain * (local ? 0.55 : 0.4) * w), pan, 'beam', 0.7, local ? 4 : 2, 0.05);
+    if (!dest || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    this.tone(dest, t, 1800 / w, 260 / w, 0.32 * w, 0.3, 'sawtooth');
+    this.tone(dest, t, 900 / w, 140 / w, 0.4 * w, 0.35, 'square');
+    this.noiseBurst(dest, t, 0.12 * w, 'highpass', 4200, 2000, 0.55, 0.5);
+    this.tone(dest, t, 110 / w, 35, 0.25 + 0.15 * w, 0.75);
+    this.noiseBurst(dest, t, 0.35 * w, 'lowpass', 1400, 120, 0.6, 0.5);
+    if (local) this.duck(0.7);
+  }
+
+  /** Melee whoosh; `heavy` = axe / bat / chainsaw-sized swing. */
+  swing(pos: THREE.Vector3 | null, camera: THREE.Camera | null, heavy: boolean, weight = 1): void {
+    const w = Math.max(0.75, Math.min(1.8, weight));
+    const { gain, pan } = this.spatial(pos, camera);
+    const dest = this.out(Math.min(1, gain * (heavy ? 0.55 : 0.4) * w), pan, 'swing', 0.5, 2, 0.06);
+    if (!dest || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    this.noiseBurst(dest, t, (heavy ? 0.32 : 0.22) * Math.sqrt(w), 'bandpass', (heavy ? 350 : 600) / w, (heavy ? 1400 : 2600) / Math.sqrt(w), 0.6, 0.95);
+    this.tone(dest, t, (heavy ? 90 : 140) / w, (heavy ? 50 : 90) / w, 0.2 * w, 0.3);
+  }
+
+  /** Melee connect: meaty thwack with a metallic ring. */
+  meleeHit(pos: THREE.Vector3 | null, camera: THREE.Camera | null, strength: number): void {
+    const { gain, pan } = this.spatial(pos, camera);
+    const heavy = strength >= 60;
+    const dest = this.out(gain * Math.min(1, 0.4 + strength * 0.006), pan, 'melee-hit', heavy ? 0.7 : 0.45, 3, 0.05);
+    if (!dest || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    this.tone(dest, t, heavy ? 110 : 130, 40, heavy ? 0.3 : 0.18, 0.95);
+    this.noiseBurst(dest, t, heavy ? 0.22 : 0.12, 'lowpass', 2400, 220, 0.6, 1);
+    const f = 380 + Math.random() * 200;
+    this.tone(dest, t + 0.005, f, f * 0.92, 0.22, 0.14, 'triangle');
+    // Bone-deep crunch for kill-tier hits.
+    if (heavy) this.tone(dest, t, 58, 22, 0.45, 0.8);
+    if (gain > 0.5) this.duck(heavy ? 0.55 : 0.7);
+  }
+
+  /** Electric discharge (taser pulse, chain lightning, stun). */
+  zap(pos: THREE.Vector3 | null, camera: THREE.Camera | null, big = false, weight = 1): void {
+    const { gain, pan } = this.spatial(pos, camera);
+    const dest = this.out(Math.min(1, gain * (big ? 0.6 : 0.4) * Math.max(0.75, Math.min(1.8, weight))), pan, 'zap', big ? 0.8 : 0.4, 3, 0.05);
+    if (!dest || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    this.noiseBurst(dest, t, big ? 0.55 : 0.25, 'bandpass', 3200, 600, 0.65, 0.85);
+    this.tone(dest, t, big ? 1400 : 1100, 90, big ? 0.45 : 0.22, 0.22, 'sawtooth');
+    this.tone(dest, t, 60, 40, big ? 0.4 : 0.2, 0.5, 'square');
+    if (big && gain > 0.4) this.duck(0.7);
+  }
+
+  /** Syringe: rising sparkle arpeggio. */
+  heal(pos: THREE.Vector3 | null, camera: THREE.Camera | null): void {
+    const { gain, pan } = this.spatial(pos, camera);
+    const dest = this.out(gain * 0.3, pan, 'heal', 0.75, 3, 0.2);
+    if (!dest || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    this.noiseBurst(dest, t, 0.1, 'highpass', 3000, 5000, 0.55, 0.3);
+    [523, 659, 784, 1046].forEach((f, i) => this.tone(dest, t + i * 0.07, f, f * 1.02, 0.3, 0.22, 'triangle'));
+  }
+
+  /** Shield up (rising hum) or shattered (glassy crash). */
+  shield(pos: THREE.Vector3 | null, camera: THREE.Camera | null, broken: boolean): void {
+    const { gain, pan } = this.spatial(pos, camera);
+    const dest = this.out(gain * 0.4, pan, broken ? 'shield-break' : 'shield', 0.7, 3, 0.15);
+    if (!dest || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    if (broken) {
+      this.noiseBurst(dest, t, 0.4, 'highpass', 5000, 1800, 0.55, 0.85);
+      this.tone(dest, t, 1500, 700, 0.25, 0.2, 'triangle');
+      this.tone(dest, t, 2100, 900, 0.2, 0.12, 'triangle');
+    } else {
+      this.tone(dest, t, 180, 420, 0.5, 0.4, 'triangle');
+      this.tone(dest, t, 360, 840, 0.5, 0.18);
+      this.noiseBurst(dest, t, 0.35, 'bandpass', 900, 2500, 0.6, 0.4);
+    }
+  }
+
+  /** Blink: reverse whoosh into a bright pop. */
+  teleport(pos: THREE.Vector3 | null, camera: THREE.Camera | null): void {
+    const { gain, pan } = this.spatial(pos, camera);
+    const dest = this.out(gain * 0.45, pan, 'teleport', 0.55, 3, 0.1);
+    if (!dest || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    this.tone(dest, t, 300, 1600, 0.18, 0.3, 'triangle');
+    this.noiseBurst(dest, t, 0.2, 'bandpass', 500, 4000, 0.6, 0.6);
+    this.tone(dest, t + 0.17, 1200, 400, 0.18, 0.25);
+  }
+
+  /** Flamethrower roar lasting `duration` seconds. */
+  flame(pos: THREE.Vector3 | null, camera: THREE.Camera | null, duration: number): void {
+    const { gain, pan } = this.spatial(pos, camera);
+    const dur = Math.max(0.3, Math.min(3, duration));
+    const dest = this.out(gain * 0.5, pan, 'flame', dur + 0.3, 3, 0.2);
+    if (!dest || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    this.noiseBurst(dest, t, dur, 'lowpass', 1600, 700, 0.6, 0.9);
+    this.noiseBurst(dest, t, 0.2, 'bandpass', 400, 1800, 0.6, 0.6);
+    this.tone(dest, t, 70, 55, dur, 0.25);
+  }
+
+  /** Chainsaw rev lasting `duration` seconds. */
+  chainsaw(pos: THREE.Vector3 | null, camera: THREE.Camera | null, duration: number): void {
+    const { gain, pan } = this.spatial(pos, camera);
+    const dur = Math.max(0.3, Math.min(3.5, duration));
+    const dest = this.out(gain * 0.45, pan, 'chainsaw', dur + 0.3, 3, 0.2);
+    if (!dest || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    this.tone(dest, t, 70, 140, dur, 0.4, 'sawtooth');
+    this.tone(dest, t, 140, 260, dur, 0.15, 'square');
+    this.noiseBurst(dest, t, dur, 'bandpass', 1400, 2400, 0.6, 0.45);
+  }
+
+  /** Heavy object dropped on the floor (deployables). */
+  deploy(pos: THREE.Vector3 | null, camera: THREE.Camera | null): void {
+    const { gain, pan } = this.spatial(pos, camera);
+    const dest = this.out(gain * 0.45, pan, 'deploy', 0.5, 2, 0.1);
+    if (!dest || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    this.tone(dest, t, 110, 40, 0.25, 0.9);
+    this.noiseBurst(dest, t, 0.15, 'lowpass', 1200, 200, 0.6, 0.8);
+    this.tone(dest, t + 0.02, 260, 220, 0.3, 0.12, 'triangle');
+  }
+
+  /** Liquid / fire splash when a zone ignites. */
+  ignite(pos: THREE.Vector3 | null, camera: THREE.Camera | null, fire: boolean): void {
+    const { gain, pan } = this.spatial(pos, camera);
+    const dest = this.out(gain * 0.45, pan, 'ignite', 0.8, 2, 0.1);
+    if (!dest || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    this.noiseBurst(dest, t, 0.08, 'highpass', 4000, 2500, 0.55, 0.5);
+    this.noiseBurst(dest, t + 0.03, 0.6, fire ? 'lowpass' : 'bandpass', fire ? 1500 : 900, fire ? 400 : 1600, 0.6, 0.8);
+  }
+
+  /** UI: weapon spent / disarmed. */
+  spent(disarmed = false): void {
+    const dest = this.out(0.2, 0, 'spent', 0.35, 3, 0.1, true);
+    if (!dest || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    this.tone(dest, t, disarmed ? 420 : 520, disarmed ? 180 : 330, 0.18, 0.28, 'triangle');
+    this.noiseBurst(dest, t, 0.05, 'bandpass', 900, 500, 0.6, 0.25);
   }
 
   impact(pos: THREE.Vector3 | null, camera: THREE.Camera | null, metal: boolean): void {
@@ -277,12 +462,16 @@ export class AudioSystem {
     this.noiseBurst(dest, t, 0.045, 'bandpass', 1800, 550, 0.8, 0.4);
   }
 
+  /** Kill confirm: a heavy body-thump, then a bright rising two-note chime. */
   killConfirm(): void {
-    const dest = this.out(0.23, 0, 'kill', 0.4, 5, 0.08);
+    const dest = this.out(0.42, 0, 'kill', 0.75, 5, 0.08);
     if (!dest || !this.ctx) return;
     const t = this.ctx.currentTime;
-    this.tone(dest, t, 350, 320, 0.09, 0.3, 'triangle'); this.tone(dest, t + 0.065, 700, 660, 0.14, 0.25);
-    this.noiseBurst(dest, t, 0.05, 'bandpass', 1700, 750, 0.7, 0.3);
+    this.tone(dest, t, 95, 34, 0.32, 0.9);
+    this.noiseBurst(dest, t, 0.12, 'lowpass', 1800, 200, 0.6, 0.55);
+    this.tone(dest, t + 0.07, 523, 530, 0.16, 0.32, 'triangle');
+    this.tone(dest, t + 0.16, 1046, 1060, 0.42, 0.3, 'triangle');
+    this.duck(0.55);
   }
 
   hitMarker(): void {
@@ -293,16 +482,30 @@ export class AudioSystem {
     this.tone(dest, t, 720, 620, 0.04, 0.13, 'triangle');
   }
 
+  /**
+   * Deep explosion boom: a sub-bass drop under a crack, then (as a second,
+   * lower-priority voice) a long rolling rumble tail. `scale` ≈ blast radius / 6.
+   * Distant blasts carry further than gunfire, so the falloff is gentler.
+   */
   explosion(pos: THREE.Vector3 | null, camera: THREE.Camera | null, scale = 1): void {
-    const { gain, pan } = this.spatial(pos, camera);
-    const dest = this.out(Math.min(0.95, gain * 0.85 * scale), pan, 'explosion', 1.65, 4, 0.045);
+    const s = Math.max(0.4, Math.min(2, scale));
+    const near = this.spatial(pos, camera);
+    const far = pos ? 1 / (1 + (pos.distanceTo(this.listenerPos) / (28 + 14 * s)) ** 2) : 1;
+    const gain = Math.max(near.gain, far);
+    const pan = near.pan;
+    const dest = this.out(Math.min(1, gain * 0.9 * (0.55 + 0.45 * s)), pan, 'explosion', 1.4 + 0.5 * s, 4, 0.045);
     if (!dest || !this.ctx) return;
     const t = this.ctx.currentTime;
-    this.tone(dest, t, 83, 29, 0.6, 0.9);
-    this.noiseBurst(dest, t, 1.2, 'lowpass', 2100, 100, 0.6, 0.95);
-    this.noiseBurst(dest, t, 0.15, 'highpass', 3200, 900, 0.55, 0.42);
-    this.noiseBurst(dest, t + 0.17, 0.65, 'bandpass', 700, 200, 0.55, 0.26);
-    if (!pos || gain > 0.4) this.duck(0.6);
+    this.tone(dest, t, 72 / Math.sqrt(s), 22, 0.75 + 0.35 * s, 1);
+    this.tone(dest, t, 140, 45, 0.22, 0.55, 'triangle');
+    this.noiseBurst(dest, t, 1.1 + 0.4 * s, 'lowpass', 2000, 80, 0.6, 1);
+    this.noiseBurst(dest, t, 0.14, 'highpass', 3200, 900, 0.55, 0.5);
+    if (!pos || gain > 0.35) this.duck(s > 1.1 ? 0.45 : 0.6);
+    const tail = this.out(Math.min(0.85, gain * 0.6 * s), pan, 'explosion-tail', 2.4 + 0.8 * s, 2, 0.12);
+    if (!tail) return;
+    this.noiseBurst(tail, t + 0.12, Math.min(1.95, 1.3 + 0.5 * s), 'lowpass', 520, 45, 0.55, 0.8);
+    this.tone(tail, t + 0.08, 46, 21, 1.5 + 0.6 * s, 0.6);
+    this.noiseBurst(tail, t + 0.3, 1.1 + 0.4 * s, 'bandpass', 900, 260, 0.55, 0.22);
   }
 
   ram(pos: THREE.Vector3 | null, camera: THREE.Camera | null, strength: number): void {

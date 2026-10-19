@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import {
   castHitTargets,
   createEnvCaster,
+  getWeapon,
   makeStepResult,
   physicsConfig,
   StepKind,
@@ -12,7 +13,10 @@ import {
   type ProjectileWorld,
   type ShotResultMsg,
   type Vec3,
+  type WeaponId,
+  weaponStats,
 } from '@robot-arena/shared';
+import { weaponSizeMul, type ProjectileModel } from './WeaponModels';
 import type { PhysicsWorld } from '../physics/PhysicsWorld';
 import { MAX_PROJECTILES, TRAIL_POINTS, type ProjectileDrawData } from './vfx/ProjectileRenderer';
 import type { ImpactSurface, VFXSystem } from './vfx/VFXSystem';
@@ -31,7 +35,64 @@ interface Shell {
   trail: Float32Array;
   trailCount: number;
   path: Vec3[] | null;
+  style: ShellStyle;
+  /** Weapon sizeMul at spawn: scales the model, core glow and trail width. */
+  size: number;
 }
+
+/** Per-weapon look of a shell in flight. */
+interface ShellStyle {
+  model: ProjectileModel | null;
+  /** Glowing core size (0 = hidden behind the model). */
+  coreScale: number;
+  trailAlpha: number;
+  /** Trail / core tint override (e.g. rocket exhaust instead of the weapon's body colour). */
+  tint?: number;
+  /** Ribbon width multiplier (on top of sizeMul). */
+  trailWidth?: number;
+  /** Ribbon length in history points (<= TRAIL_POINTS). */
+  trailLen?: number;
+  /** 0..1 strength of the billowing grey smoke trail (rockets / fireworks / lobbed fire). */
+  smoke?: number;
+}
+
+const DEFAULT_STYLE: ShellStyle = { model: null, coreScale: 1, trailAlpha: 1 };
+/**
+ * Every WeaponId has a look, so a weapon whose `kind` the balance pass turns
+ * into a projectile (syringe leech dart, thrown canister...) still flies with
+ * a sensible model. Melee / dash weapons fall back to a glowing core.
+ */
+const STYLES: Record<WeaponId, ShellStyle> = {
+  cleaver: { model: 'blade', coreScale: 0.3, trailAlpha: 0.6, trailWidth: 1.3, trailLen: 14 },
+  darts: { model: 'dart', coreScale: 0.4, trailAlpha: 0.8, trailLen: 14 },
+  molotov: { model: 'bottle', coreScale: 0.3, trailAlpha: 0.8, tint: 0xff9a2e, trailLen: 18, smoke: 0.45 },
+  acid_vial: { model: 'vial', coreScale: 0.3, trailAlpha: 0.7, trailLen: 16 },
+  crossbow: { model: 'bolt', coreScale: 0.35, trailAlpha: 0.9, trailLen: 18 },
+  compound_bow: { model: 'arrow', coreScale: 0.35, trailAlpha: 1, trailLen: 22, trailWidth: 0.9 },
+  rpg: { model: 'rocket', coreScale: 0.6, trailAlpha: 1, tint: 0xff8a2e, trailWidth: 1.6, trailLen: 24, smoke: 1 },
+  firework: { model: 'firework', coreScale: 0.5, trailAlpha: 1, tint: 0xffb02e, trailWidth: 1.3, trailLen: 24, smoke: 0.8 },
+  tesla_gun: { model: 'spark', coreScale: 1.3, trailAlpha: 1, trailWidth: 1.3, trailLen: 18 },
+  storm_kunai: { model: 'kunai', coreScale: 0.5, trailAlpha: 1, trailWidth: 1.2, trailLen: 22 },
+  flintlock: { model: 'ball', coreScale: 0.4, trailAlpha: 0.8, tint: 0xffb060, trailLen: 16, smoke: 0.35 },
+  blunderbuss: { model: null, coreScale: 0.7, trailAlpha: 0.9, tint: 0xff7a1a, trailLen: 12, smoke: 0.2 },
+  shotgun: { model: null, coreScale: 0.75, trailAlpha: 0.85, tint: 0xffc070, trailLen: 10 },
+  revolver: { model: null, coreScale: 0.9, trailAlpha: 1, trailLen: 16 },
+  pistol: { model: null, coreScale: 0.9, trailAlpha: 1, tint: 0xffd070, trailLen: 14 },
+  twin_cannon: { model: 'slug', coreScale: 1.2, trailAlpha: 1, trailWidth: 1.5, trailLen: 18, smoke: 0.3 },
+  stun_pistol: { model: 'orb', coreScale: 0.8, trailAlpha: 1, trailLen: 16 },
+  syringe: { model: 'needle', coreScale: 0.35, trailAlpha: 0.9, trailLen: 18 },
+  shield_canister: { model: 'canister', coreScale: 0.4, trailAlpha: 0.7, trailLen: 14 },
+  toxic_barrel: { model: 'barrel', coreScale: 0.3, trailAlpha: 0.6, trailLen: 14, smoke: 0.3 },
+  taser: { model: 'orb', coreScale: 0.9, trailAlpha: 1, trailLen: 14 },
+  torch: { model: 'fireball', coreScale: 0.9, trailAlpha: 1, tint: 0xff7a1a, trailWidth: 1.4, trailLen: 18, smoke: 0.5 },
+  ray_gun: { model: 'lance', coreScale: 1, trailAlpha: 1, trailWidth: 1.2, trailLen: 22 },
+  knuckles: DEFAULT_STYLE,
+  fire_axe: DEFAULT_STYLE,
+  spiked_bat: DEFAULT_STYLE,
+  crowbar: DEFAULT_STYLE,
+  katana: DEFAULT_STYLE,
+  chainsaw: DEFAULT_STYLE,
+};
 
 export interface ProjectileCallbacks {
   onSurfaceHit(point: Vec3, normal: Vec3, surface: ImpactSurface): void;
@@ -103,9 +164,13 @@ export class ProjectileSystem {
         trail: new Float32Array(TRAIL_POINTS * 3),
         trailCount: 0,
         path: null,
+        style: DEFAULT_STYLE,
+        size: 1,
       });
     }
-    this.draw = { x: 0, y: 0, z: 0, dx: 0, dy: 0, dz: 1, r: 1, g: 1, b: 1, trail: this.pool[0].trail, trailCount: 0, alpha: 1 };
+    this.draw = { x: 0, y: 0, z: 0, dx: 0, dy: 0, dz: 1, r: 1, g: 1, b: 1, trail: this.pool[0].trail, trailCount: 0, alpha: 1,
+      age: 0, model: null, coreScale: 1, trailAlpha: 1, size: 1, trailWidth: 1, trailLen: TRAIL_POINTS, smoke: 0,
+    };
   }
 
   /** Robot hitboxes shells are tested against this tick (interpolated remotes + the predicted local robot). */
@@ -114,8 +179,16 @@ export class ProjectileSystem {
     this.targetCount = count;
   }
 
-  /** `seq` >= 0 marks the local player's predicted shell (input seq + barrel). */
-  spawn(owner: number, pos: Vec3, vel: Vec3, bounces: number, color: number, serverPid: number, seq: number, barrel: number, assist: boolean, lifetime = physicsConfig.projectileLifetime): void {
+  /**
+   * `seq` >= 0 marks the local player's predicted shell (input seq + barrel).
+   * `weaponId` picks the in-flight look (model, trail) and the weapon's gravity;
+   * for predicted shells it also adds the weapon's own `bounces` on top of
+   * `bounces` (remote shells trust the server's count as given).
+   */
+  spawn(
+    owner: number, pos: Vec3, vel: Vec3, bounces: number, color: number, serverPid: number, seq: number, barrel: number, assist: boolean,
+    lifetime = physicsConfig.projectileLifetime, weaponId?: WeaponId,
+  ): void {
     let p: Shell | undefined;
     for (const s of this.pool) {
       if (!s.active) {
@@ -130,13 +203,19 @@ export class ProjectileSystem {
     st.owner = owner;
     st.pos.x = pos.x; st.pos.y = pos.y; st.pos.z = pos.z;
     st.vel.x = vel.x; st.vel.y = vel.y; st.vel.z = vel.z;
-    st.bouncesLeft = bounces;
+    const weapon = weaponId ? getWeapon(weaponId) : null;
+    st.bouncesLeft = bounces + (weapon && seq >= 0 ? weapon.bounces : 0);
+    // Matches the server: a weapon's own gravity (lobs, arrows), else the global tuning value.
+    st.gravity = weapon && weapon.gravity > 0 ? weapon.gravity : undefined;
     st.age = 0;
     st.lifetime = lifetime;
-    st.radius = physicsConfig.projectileRadius;
+    // Hitbox tracks shared tuning (projectileRadius × sizeMul) so prediction matches the server.
+    st.radius = weaponId ? weaponStats(weaponId).radius : physicsConfig.projectileRadius;
     st.assist = assist;
     st.dist = 0;
-    p.color.setHex(color).lerp(_c.setRGB(1, 1, 1), 0.35).multiplyScalar(5);
+    p.style = (weaponId && STYLES[weaponId]) || DEFAULT_STYLE;
+    p.size = weaponId ? weaponSizeMul(weaponId) : 1;
+    p.color.setHex(p.style.tint ?? color).lerp(_c.setRGB(1, 1, 1), 0.35).multiplyScalar(5);
     p.serverPid = serverPid;
     p.seq = seq;
     p.barrel = barrel;
@@ -261,6 +340,14 @@ export class ProjectileSystem {
       d.trail = p.trail;
       d.trailCount = p.trailCount;
       d.alpha = p.waitT >= 0 ? Math.max(0, 1 - p.waitT / FADE_S) : 1;
+      d.age = s.age;
+      d.model = p.style.model;
+      d.coreScale = p.style.coreScale;
+      d.trailAlpha = p.style.trailAlpha;
+      d.size = p.size;
+      d.trailWidth = p.style.trailWidth ?? 1;
+      d.trailLen = p.style.trailLen ?? 14;
+      d.smoke = p.style.smoke ?? 0;
       out.push(d);
     }
     out.end(time);
