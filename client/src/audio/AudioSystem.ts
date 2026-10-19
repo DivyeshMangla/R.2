@@ -606,8 +606,11 @@ export class AudioSystem {
     const roadHz = input.surface === 'desert' ? 520 : input.surface === 'arctic' ? 780 : input.surface === 'forest' ? 340 : 420;
     this.road.filter.frequency.setTargetAtTime(roadHz + frame.road * 120, t, 0.2);
     this.road.gain.gain.setTargetAtTime(a * frame.road * 0.043 * rough, t, 0.1);
-    this.tires.filter.frequency.setTargetAtTime(input.surface === 'arctic' ? 1400 : input.surface === 'desert' ? 650 : 1050, t, 0.16);
-    this.tires.gain.gain.setTargetAtTime(a * frame.slip * 0.105, t, 0.065);
+    // Broad, softly moving scrub stays below the engine instead of becoming a
+    // fixed high-pitched squeal during a sustained handbrake corner.
+    const tireHz = input.surface === 'arctic' ? 1200 : input.surface === 'desert' || input.surface === 'forest' ? 580 : 850;
+    this.tires.filter.frequency.setTargetAtTime(tireHz + frame.slip * 180, t, 0.2);
+    this.tires.gain.gain.setTargetAtTime(a * frame.slip * 0.085, t, 0.09);
     this.wind.gain.gain.setTargetAtTime(a * frame.wind * 0.04, t, 0.22);
     this.boost.gain.gain.setTargetAtTime(a * frame.boost * 0.06, t, 0.09);
     if (this.vehicleDuck && t > this.duckUntil) this.vehicleDuck.gain.setTargetAtTime(1, t, 0.16);

@@ -181,7 +181,7 @@ export class UI {
     this.driveHeading = el('span', 'drive-heading', speedRow, '▲');
     this.driveHeading.title = 'Chassis direction relative to your view';
     this.driveMode = el('div', 'drive-mode', this.driveFeedback, 'READY');
-    el('small', 'drive-tip', this.driveFeedback, 'C recenter · RMB hold view');
+    el('small', 'drive-tip', this.driveFeedback, 'SPACE drift · C recenter');
     const arcs = el('div', 'hit-indicator', this.hud);
     for (let i = 0; i < 4; i++) this.hitArcs.push({ node: el('div', 'hit-arc', arcs), t: 0 });
     this.killBanner = el('div', 'kill-banner', this.hud);
@@ -219,7 +219,8 @@ export class UI {
       ['<kbd>RMB</kbd> / <kbd>C</kbd>', 'Hold view / recenter behind robot'],
       ['<kbd>LMB</kbd>', 'Use weapon (single use)'],
       ['<kbd>Shift</kbd>', 'Boost'],
-      ['<kbd>Space</kbd>', 'Ability (from power-ups)'],
+      ['<kbd>Space</kbd> + <kbd>A</kbd>/<kbd>D</kbd>', 'Hold to drift; release to regain grip'],
+      ['<kbd>Q</kbd>', 'Ability (from power-ups)'],
       ['<kbd>1</kbd><kbd>2</kbd><kbd>3</kbd>', 'Pick level-up card'],
       ['<kbd>Tab</kbd>', 'Scoreboard'],
       ['<kbd>`</kbd> / <kbd>F2</kbd>', 'Tuning panel'],
@@ -318,11 +319,11 @@ export class UI {
     if (this.pickupPrompt.textContent !== text) this.pickupPrompt.textContent = text;
   }
 
-  setDriving(forwardSpeed: number, throttle: number, relativeYaw: number, grounded: boolean, boosting: boolean, alive: boolean): void {
+  setDriving(forwardSpeed: number, throttle: number, relativeYaw: number, grounded: boolean, boosting: boolean, alive: boolean, driftAmount = 0): void {
     const speed = Number.isFinite(forwardSpeed) ? forwardSpeed : 0;
     this.driveSpeed.textContent = String(Math.round(Math.abs(speed) * 3.6));
     const mode = !alive ? 'OFFLINE' : !grounded ? 'AIRBORNE' : throttle * speed < -0.6 ? 'BRAKING'
-      : speed < -0.5 ? 'REVERSE' : boosting ? 'BOOST' : Math.abs(speed) < 0.5 ? 'READY'
+      : speed < -0.5 ? 'REVERSE' : driftAmount > 0.2 ? 'DRIFT' : boosting ? 'BOOST' : Math.abs(speed) < 0.5 ? 'READY'
       : Math.abs(throttle) < 0.05 ? 'COAST' : 'DRIVE';
     if (this.driveMode.textContent !== mode) this.driveMode.textContent = mode;
     this.driveFeedback.dataset.mode = mode.toLowerCase();

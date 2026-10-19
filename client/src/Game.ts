@@ -1497,12 +1497,13 @@ export class Game {
     const t = vfx.time;
     const lateral = Math.abs(v.lateralSpeed);
     const slide = grounded && (lateral > 3 || (isMe && Math.abs(this.lastThrottle) > 0 && Math.abs(v.forwardSpeed) < 2 && v.velocity.lengthSq() > 4));
-    const strength = slide ? Math.min(1, (lateral - 2.5) / 5 + 0.3) : 0;
+    const strength = grounded ? Math.max(slide ? Math.min(1, (lateral - 2.5) / 5 + 0.3) : 0, v.driftAmount * Math.min(0.8, lateral / 4)) : 0;
     this.fleet.chassisDirection(v, RIGHT, _n);
     for (let i = 0; i < 4; i++) {
       this.fleet.wheelContact(v, i, _v);
-      vfx.skids.feed(v.id * 4 + i, _v.x, _v.y, _v.z, _n.x, _n.z, 0.3, strength, t);
-      if (strength > 0 && i >= 2) vfx.tireSmoke(_v, v.velocity, strength * dt * 30);
+      const tireStrength = grounded && (!v.hasTelemetry || v.wheelContact[i]) ? strength * (i < 2 ? 0.45 : 1) : 0;
+      vfx.skids.feed(v.id * 4 + i, _v.x, _v.y, _v.z, _n.x, _n.z, 0.3, tireStrength, t);
+      if (tireStrength > 0 && i >= 2) vfx.tireSmoke(_v, v.velocity, tireStrength * dt * 24);
     }
     if (v.landingImpact > 0) {
       vfx.landingDust(v.position, v.landingImpact);
@@ -1558,8 +1559,9 @@ export class Game {
       const v = this.predictor.velocity();
       _vel.set(v.x, v.y, v.z);
       boosting = !!c?.sim.boosting;
-      let flags = me.flags & ~RobotFlags.BOOSTING;
+      let flags = me.flags & ~(RobotFlags.BOOSTING | RobotFlags.DRIFTING);
       if (boosting) flags |= RobotFlags.BOOSTING;
+      if ((c?.sim.driftAmount ?? 0) > 0.15) flags |= RobotFlags.DRIFTING;
       myVisual.visible = alive;
       if (alive) {
         this.poseVisual(myVisual, _pos, _quat, _vel, this.aimValid ? this.aim.yaw : this.input.viewYaw, this.aimValid ? this.aim.pitch : 0, me, flags, 0);
@@ -1616,6 +1618,7 @@ export class Game {
     sound.lateralSpeed = myVisual ? myVisual.velocity.x * cos - myVisual.velocity.z * sin : 0;
     sound.throttle = this.lastThrottle;
     sound.driveDemand = controller?.sim.driveDemand ?? 0;
+    sound.driftAmount = controller?.sim.driftAmount ?? 0;
     sound.grounded = this.driveGrounded;
     sound.boosting = boosting;
     sound.alive = alive;
@@ -1638,6 +1641,7 @@ export class Game {
       intent.firing = this.input.isFiring;
       intent.steady = this.input.isSteadyCamera;
       intent.recenter = this.input.consumeRecenter();
+      intent.driftAmount = controller?.sim.driftAmount ?? 0;
       this.input.viewYaw = this.cameraCtl.resolveDrivingYaw(this.input.viewYaw, this.driveYaw, this.driveForwardSpeed, dt, intent);
       const motion = this.cameraMotion;
       motion.velocity = myVisual?.velocity ?? this.cameraMotion.velocity;
@@ -1712,8 +1716,8 @@ export class Game {
   }
 
   private readonly abilitySlots: AbilityDisplay[] = [
-    { id: 'dash', icon: '➤', cooldown: 0, max: 1, key: 'SPACE' },
-    { id: 'emp', icon: 'ϟ', cooldown: 0, max: 1, key: 'SPACE' },
+    { id: 'dash', icon: '➤', cooldown: 0, max: 1, key: 'Q' },
+    { id: 'emp', icon: 'ϟ', cooldown: 0, max: 1, key: 'Q' },
   ];
   private readonly abilityList: AbilityDisplay[] = [];
   private leaderName = '—';
@@ -1743,7 +1747,7 @@ export class Game {
       }
     }
     ui.setPickupPrompt(prompt);
-    ui.setDriving(this.driveForwardSpeed, this.lastThrottle, this.input.viewYaw - this.driveYaw, this.driveGrounded, !!this.predictor.controller?.sim.boosting, alive);
+    ui.setDriving(this.driveForwardSpeed, this.lastThrottle, this.input.viewYaw - this.driveYaw, this.driveGrounded, !!this.predictor.controller?.sim.boosting, alive, this.predictor.controller?.sim.driftAmount ?? 0);
 
     if (me && info) {
       const c = this.predictor.controller;

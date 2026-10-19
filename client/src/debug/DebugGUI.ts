@@ -13,6 +13,7 @@ const PHYSICS_GROUPS: Record<string, PhysicsConfigKey[]> = {
   World: ['gravity'],
   Chassis: ['chassisMass', 'centerOfMassY', 'linearDamping', 'angularDamping', 'chassisFriction', 'chassisRestitution'],
   Drivetrain: ['engineForce', 'reverseFactor', 'maxSpeed', 'brakeForce', 'rollingBrake', 'maxSteerAngle', 'steerSpeedFalloff', 'steerResponse', 'steerReturnResponse', 'throttleResponse', 'maxLateralAcceleration', 'lateralDamping', 'downforce'],
+  Drift: ['yawResponse', 'driftMinSpeed', 'driftGrip', 'driftFrontGrip', 'driftResponse', 'driftRecovery', 'driftYawRate'],
   'Suspension & Tyres': [
     'suspensionRestLength',
     'suspensionStiffness',

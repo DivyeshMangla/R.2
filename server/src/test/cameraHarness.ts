@@ -2,7 +2,7 @@
 /** Headless camera/input checks. No browser or display is controlled. */
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { aimDirection, angleDiff, Buttons, cameraOrigin, DEFAULT_CAMERA_RIG } from '@robot-arena/shared';
+import { aimDirection, angleDiff, Buttons, cameraOrigin, DEFAULT_CAMERA_RIG, RobotFlags } from '@robot-arena/shared';
 import { InputManager } from '../../../client/src/input/InputManager';
 import { CameraController } from '../../../client/src/render/CameraController';
 import { DRIVING_CAMERA_AUTO_RATE, DrivingCamera, type DrivingViewIntent } from '../../../client/src/render/DrivingCamera';
@@ -22,7 +22,7 @@ scenario('aim ownership and inactive driving', () => {
   const cases = [
     { speed: 8, state: { firing: true } }, { speed: 8, state: { steady: true } },
     { speed: 8, state: { active: false, recenter: true } }, { speed: 0, state: {} },
-    { speed: -6, state: {} }, { speed: 8, state: { mouseIdleSeconds: 1.1 } },
+    { speed: -6, state: {} }, { speed: 8, state: { mouseIdleSeconds: 0.64 } },
   ];
   for (const c of cases) {
     const drive = new DrivingCamera();
@@ -74,7 +74,7 @@ scenario('new mouse movement cancels C', () => {
   yaw = drive.update(yaw, 0, 8, 1 / 60, intent({ recenter: true }));
   for (let i = 0; i < 10; i++) yaw = drive.update(yaw, 0, 8, 1 / 60, intent());
   const held = yaw;
-  for (let i = 0; i < 60; i++) yaw = drive.update(yaw, 0, 8, 1 / 60, intent({ mouseSerial: 2, mouseIdleSeconds: i / 60 }));
+  for (let i = 0; i < 60; i++) yaw = drive.update(yaw, 0, 8, 1 / 60, intent({ mouseSerial: i + 2, mouseIdleSeconds: 0 }));
   assert(Math.abs(angleDiff(held, yaw)) < 1e-10, 'C kept rotating after fresh pointer input');
   return { heldRadians: yaw };
 });
@@ -93,6 +93,69 @@ scenario('chase timing across render rates', () => {
   assert(spread < 0.005, 'Chase feel changed materially with render framerate');
   assert(Math.abs(angleDiff(y60, -0.15)) < 0.025, 'Chase did not converge behind the robot');
   return { yaw30: y30, yaw60: y60, yaw144: y144, spread };
+});
+
+scenario('continuous normal/drift follow and explicit aim ownership', () => {
+  const sliding = new DrivingCamera();
+  let driftYaw = 0;
+  let worstHeadingError = 0;
+  let wrongWayTicks = 0;
+  // Fixed target checks miss the camera falling >180 degrees behind a held
+  // drift. Exercise repeated real heading wraps for ten seconds in both turns.
+  for (const driftAmount of [0, 1]) for (const direction of [-1, 1]) {
+    const chase = new DrivingCamera();
+    let view = 0;
+    for (let i = 1; i <= 600; i++) {
+      const heading = Math.atan2(Math.sin(direction * 1.8 * i / 60), Math.cos(direction * 1.8 * i / 60));
+      const next = chase.update(view, heading, 16, 1 / 60, intent({ driftAmount }));
+      const step = angleDiff(view, next);
+      if (step * direction < -1e-10) wrongWayTicks++;
+      worstHeadingError = Math.max(worstHeadingError, Math.abs(angleDiff(next, heading)));
+      view = next;
+    }
+  }
+  assert(wrongWayTicks === 0 && worstHeadingError < 0.6,
+    'Continuous drift outran the chase camera or reversed its follow direction');
+  for (let i = 0; i < 30; i++) driftYaw = sliding.update(driftYaw, 1, 15, 1 / 60, intent({ driftAmount: 1 }));
+  for (const extra of [{ steady: true }, { firing: true }, { mouseIdleSeconds: 0, mouseSerial: 2 }]) {
+    const held = driftYaw;
+    for (let i = 0; i < 600; i++) {
+      const heading = Math.atan2(Math.sin(-1.8 * i / 60), Math.cos(-1.8 * i / 60));
+      driftYaw = sliding.update(driftYaw, heading, 15, 1 / 60, intent({ driftAmount: 1, ...extra }));
+      assert(Math.abs(angleDiff(held, driftYaw)) < 1e-10, 'Drifting stole mouse or combat camera ownership');
+    }
+  }
+  const manual = new DrivingCamera();
+  const manualDrift = new DrivingCamera();
+  let plain = 1;
+  let drift = 1;
+  for (let i = 0; i < 30; i++) {
+    plain = manual.update(plain, 0, 15, 1 / 60, intent({ recenter: i === 0 }));
+    drift = manualDrift.update(drift, 0, 15, 1 / 60, intent({ driftAmount: 1, recenter: i === 0 }));
+  }
+  assert(Math.abs(angleDiff(plain, drift)) < 1e-10, 'Explicit recenter lost authority during a drift');
+  return { worstHeadingErrorDegrees: worstHeadingError * 180 / Math.PI, wrongWayTicks, manualDriftError: Math.abs(angleDiff(plain, drift)) };
+});
+
+scenario('first turn after mouse movement keeps a readable chase angle', () => {
+  let worstHeadingError = 0;
+  let wrongWayTicks = 0;
+  for (const driftAmount of [0, 1]) for (const direction of [-1, 1]) {
+    const chase = new DrivingCamera();
+    let view = 0;
+    for (let i = 1; i <= 600; i++) {
+      const seconds = i / 60;
+      const heading = Math.atan2(Math.sin(direction * 1.8 * seconds), Math.cos(direction * 1.8 * seconds));
+      const next = chase.update(view, heading, 16, 1 / 60,
+        intent({ mouseIdleSeconds: seconds, driftAmount }));
+      if (angleDiff(view, next) * direction < -1e-10) wrongWayTicks++;
+      worstHeadingError = Math.max(worstHeadingError, Math.abs(angleDiff(next, heading)));
+      view = next;
+    }
+  }
+  assert(wrongWayTicks === 0 && worstHeadingError < 100 * Math.PI / 180,
+    'First-turn aim grace left the camera too far behind or reversed its follow');
+  return { worstHeadingErrorDegrees: worstHeadingError * 180 / Math.PI, wrongWayTicks };
 });
 
 scenario('bounded framing, steady aim and unshaken aim ray', () => {
@@ -189,6 +252,25 @@ scenario('body load transfer follows acceleration and steady corners', () => {
   return { acceleratingNoseUp: noseUp, brakingDip, steadyCornerRoll: cornerRoll, maxLeanAt15FPS: maxLean };
 });
 
+scenario('drift feedback follows real grounded slip and resets', () => {
+  const visual = new RobotVisual(7, 0, 0xffffff);
+  visual.flags = RobotFlags.ALIVE | RobotFlags.DRIFTING;
+  visual.velocity.set(4, 0, 12);
+  for (let i = 0; i < 60; i++) visual.update(1 / 60, 1);
+  const slideBlend = visual.driftAmount;
+  assert(slideBlend > 0.8 && slideBlend < 1, 'Grounded drift never acquired visible tire feedback');
+  visual.setTelemetry({ suspension: [0, 0, 0, 0], steering: [0, 0, 0, 0], rotation: [0, 0, 0, 0], contact: [false, false, false, false] });
+  for (let i = 0; i < 90; i++) visual.update(1 / 60, 1);
+  assert(visual.driftAmount < 0.002, 'Airborne drift retained tire smoke/marks');
+  visual.resetMotion();
+  assert(visual.driftAmount === 0, 'Respawn retained the previous drift envelope');
+  visual.setTelemetry(null);
+  visual.velocity.set(0, 0, 0);
+  for (let i = 0; i < 60; i++) visual.update(1 / 60, 1);
+  assert(visual.driftAmount === 0, 'Stationary handbrake created fake slide feedback');
+  return { groundedSlideBlend: slideBlend, resetAndRestAreSilent: true };
+});
+
 scenario('pointer unlock clears movement, fire, RMB and C', () => {
   const windowMock = new EventTarget();
   const documentMock = Object.assign(new EventTarget(), { pointerLockElement: null as MockElement | null });
@@ -214,12 +296,18 @@ scenario('pointer unlock clears movement, fire, RMB and C', () => {
     const element = new MockElement();
     const input = new InputManager(element as unknown as ConstructorParameters<typeof InputManager>[0]);
     input.requestLock();
-    for (const code of ['KeyW', 'KeyD', 'KeyC']) windowMock.dispatchEvent(Object.assign(new Event('keydown'), { code, repeat: false }));
+    for (const code of ['KeyW', 'KeyD', 'KeyC', 'Space']) windowMock.dispatchEvent(Object.assign(new Event('keydown'), { code, repeat: false }));
     element.dispatchEvent(Object.assign(new Event('mousedown'), { button: 0 }));
     windowMock.dispatchEvent(Object.assign(new Event('mouseup'), { button: 0 }));
     element.dispatchEvent(Object.assign(new Event('mousedown'), { button: 2 }));
     const armed = input.sample();
     assert(armed.throttle === 1 && armed.steer === 1 && (armed.buttons & Buttons.FIRE));
+    assert((armed.buttons & Buttons.DRIFT) !== 0 && (armed.buttons & Buttons.ABILITY) === 0,
+      'Space must drift without spending the character ability');
+    windowMock.dispatchEvent(Object.assign(new Event('keydown'), { code: 'KeyQ', repeat: false }));
+    const both = input.sample();
+    assert((both.buttons & Buttons.DRIFT) !== 0 && (both.buttons & Buttons.ABILITY) !== 0,
+      'Q ability and Space drift must remain independent input bits');
     assert(input.isFiring && input.isSteadyCamera, 'Quick click lost camera ownership when sample consumed its fire latch');
     documentMock.pointerLockElement = null;
     documentMock.dispatchEvent(new Event('pointerlockchange'));

@@ -41,3 +41,15 @@ Tests must also cover reverse, slalom, airborne behavior, ramps, old snapshot de
 The requested speed increase raises normal speed to **16 m/s (57.6 km/h)** and boost to **20 m/s (72 km/h)**. Engine force is 1,850 N; braking and rolling resistance scale with the higher cruising speed to preserve the response. The lateral-acceleration envelope stays constant, so full-speed corners naturally require more room.
 
 The updated driving harness passes: 0–90% in **3.23 s**, braking in **1.45 s / 10.07 m**, **60.7%** speed retained after three seconds coasting, **31.27 m** full-speed turn radius, and **3.61 m** low-speed radius. Steering timing, boost, dash, airborne momentum, ramps and prediction replay also pass. Distance and corner-radius checks scale with cruising speed rather than retaining the old 12 m/s distances.
+
+## Fast launch and controllable drift
+
+The next handling revision was implemented and independently checked by three sub-agents covering physics, presentation, and behavioral QA. It raises normal speed to **20 m/s (72 km/h)** and boost to **25 m/s (90 km/h)**. A stock robot reaches **99% of normal speed in 1.50 seconds**; this is the measured threshold, not a claim that an asymptotic limiter reaches exactly 100%.
+
+**Space + steering** progressively reduces tire grip to establish a physical slide. **Q** now activates power-up abilities. Countersteering changes the slide through a continuous wheel response; releasing Space restores grip gradually. Grounded steering torque supports a stable arc without teleporting heading or velocity. Steering application/return is **233 / 167 ms**, and full-speed grip turns have a **24.2 m** radius. Left/right traces match within the independent symmetry bound.
+
+Measured held drift averages **10.9° sideslip** and retains **79%** of cruising speed. Ten-second held drifts stay upright, peak below **1.60 rad/s** yaw, and retain at least **15.19 m/s**. Release recovers forward grip within 1.5 seconds. Rest, reverse, stun and airborne gates prevent unwanted drift. Tire noise, skid marks and smoke follow actual grounded slip.
+
+QA identified and fixed two first-prediction-step inconsistencies: Rapier's static scene-query broad phase was uninitialized, and freshly assigned collider mass had not yet propagated to the chassis. The client now primes its static arena before adding robots, and a changed chassis mass is recomputed immediately. Strict pending-input replay tests now measure **zero position, steering and drift-blend difference** for their scenarios.
+
+The independent `test:drift` harness covers fresh mass, acceleration, mirrored corners, rapid slalom, sustained drift, countersteer, release, boost, gating, ramps, hard cover, input/wire compatibility and pending-input replay. These measurements establish repeatable behavior; subjective feel still needs a real driving playtest.

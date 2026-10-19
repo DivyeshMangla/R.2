@@ -167,6 +167,7 @@ export class ServerRobot {
     if (this.poisonTimer > 0) flags |= RobotFlags.POISONED;
     if (this.slowTimer > 0) flags |= RobotFlags.SLOWED;
     if (this.shield > 0) flags |= RobotFlags.SHIELDED;
+    if (this.controller.sim.driftAmount > 0.15) flags |= RobotFlags.DRIFTING;
     return {
       id: this.id,
       p: s.p,
@@ -189,6 +190,7 @@ export class ServerRobot {
       aimPitch: this.aimPitch,
       steeringAngle: this.controller.sim.steeringAngle,
       driveDemand: this.controller.sim.driveDemand,
+      driftAmount: this.controller.sim.driftAmount,
     };
   }
 

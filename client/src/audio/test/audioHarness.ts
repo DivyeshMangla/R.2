@@ -28,6 +28,16 @@ const air = run(new VehicleAudioModel(), { forwardSpeed: 10, lateralSpeed: 8, th
 check(air.road < 0.001 && air.slip < 0.001 && air.rpm > 3900, 'Airborne engine may rev, but tires must not scrub or roll on air');
 const slip = run(new VehicleAudioModel(), { forwardSpeed: 6, lateralSpeed: 4 }, 2);
 check(slip.slip > 0.65, 'A true grounded slide must create tire feedback');
+const sideways = run(new VehicleAudioModel(), { forwardSpeed: 0.2, lateralSpeed: 5, driftAmount: 1 }, 2);
+check(sideways.slip > 0.9, 'A near-sideways drift must retain tire feedback');
+const parkedDrift = run(new VehicleAudioModel(), { driftAmount: 1, lateralSpeed: 0.03 }, 2);
+check(parkedDrift.slip === 0, 'Holding drift at rest must not produce tire noise');
+const driftAir = run(new VehicleAudioModel(), { forwardSpeed: 15, lateralSpeed: 7, driftAmount: 1, grounded: false }, 2);
+check(driftAir.slip === 0, 'Handbrake input must not generate tire noise in the air');
+const releasedDrift = new VehicleAudioModel();
+run(releasedDrift, { forwardSpeed: 8, lateralSpeed: 5, driftAmount: 1 }, 1);
+const recovered = run(releasedDrift, { forwardSpeed: 12, lateralSpeed: 0.1, driftAmount: 0 }, 1.5);
+check(recovered.slip < 0.002, 'Grip recovery must smoothly release the scrub layer');
 const silence = run(new VehicleAudioModel(), { forwardSpeed: 10, throttle: 1, active: false }, 3);
 check(silence.activity < 0.001 && silence.load < 0.001 && silence.road < 0.001, 'Inactive state must fade every continuous bed');
 const dead = run(new VehicleAudioModel(), { forwardSpeed: 9, lateralSpeed: 4, throttle: 1, alive: false }, 3);
@@ -46,6 +56,21 @@ for (let i = 0; i < 720; i++) {
   previousRpm = frame.rpm;
 }
 check(shifts === 3 && maxRpm > 4900 && maxRpm < 5700 && largestDrop < 280, 'Acceleration must progress through three bounded, smoothed shifts');
+const fastTransmission = new VehicleAudioModel();
+let fastShifts = 0;
+let lastShiftAt = -Infinity;
+let shortestShift = Infinity;
+let fastFrame = fastTransmission.update({ ...base, maxSpeed: 20 });
+for (let i = 1; i <= 90; i++) {
+  fastFrame = fastTransmission.update({ ...base, maxSpeed: 20, forwardSpeed: 20 * i / 90, throttle: 1, driveDemand: 1 });
+  if (fastFrame.changedGear) {
+    fastShifts++;
+    shortestShift = Math.min(shortestShift, i / 60 - lastShiftAt);
+    lastShiftAt = i / 60;
+  }
+}
+check(fastShifts === 3 && fastFrame.gear === 4 && shortestShift >= 0.33,
+  'A 1.5 s launch must reach fourth gear without rapid gear chatter');
 const threshold = new VehicleAudioModel();
 let thresholdShifts = 0;
 for (let i = 0; i < 900; i++) {
@@ -180,7 +205,7 @@ try {
     fallback.setActive(false);
     await new Promise((resolve) => setTimeout(resolve, 90));
   }
-  console.log(`Audio harness passed: 14 telemetry scenarios, 3 smooth shifts, ${thresholdShifts} jitter-threshold shift, 30/144 Hz envelope parity, 20,000-event cap=${peakVoices}, 24s combat connected voices=${peakConnectedVoices}, graph peak=${peakGraph}, baseline=${baseline}; event graphs released after 80ms fade grace; UI bus and fetch/decode fallback pass; exhaust seam=${seam.toExponential(2)}, RMS=${pulseRms.toFixed(3)}.`);
+  console.log(`Audio harness passed: idle/brake/reverse/coast/air/drift/lifecycle telemetry, 3 smooth shifts including 1.5s launch, ${thresholdShifts} jitter-threshold shift, 30/144 Hz envelope parity, 20,000-event cap=${peakVoices}, 24s combat connected voices=${peakConnectedVoices}, graph peak=${peakGraph}, baseline=${baseline}; event graphs released after 80ms fade grace; UI bus and fetch/decode fallback pass; exhaust seam=${seam.toExponential(2)}, RMS=${pulseRms.toFixed(3)}.`);
 } finally {
   system.setActive(false);
   globalThis.fetch = originalFetch;

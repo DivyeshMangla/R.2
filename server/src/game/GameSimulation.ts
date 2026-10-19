@@ -411,8 +411,8 @@ export class GameSimulation implements GameHost {
       }
       const stunned = r.stunTimer > 0;
       const driveInput = playing
-        ? { throttle: input.throttle, steer: input.steer, boost: (input.buttons & Buttons.BOOST) !== 0, ability: (input.buttons & Buttons.ABILITY) !== 0 }
-        : { throttle: 0, steer: 0, boost: false, ability: false };
+        ? { throttle: input.throttle, steer: input.steer, boost: (input.buttons & Buttons.BOOST) !== 0, ability: (input.buttons & Buttons.ABILITY) !== 0, drift: (input.buttons & Buttons.DRIFT) !== 0 }
+        : { throttle: 0, steer: 0, boost: false, ability: false, drift: false };
       r.aimYaw = input.aimYaw;
       r.aimPitch = input.aimPitch;
       const res = r.controller.drive(driveInput, dt, stunned);

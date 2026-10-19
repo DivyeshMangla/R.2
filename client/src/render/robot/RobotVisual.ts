@@ -67,6 +67,8 @@ export class RobotVisual {
   private squashVel = 0;
   private prevVy = 0;
   airTime = 0;
+  /** Smooth genuine tire slip for local and replicated skid/smoke feedback. */
+  driftAmount = 0;
   /** Set for one frame when a landing happens; value = impact speed. */
   landingImpact = 0;
 
@@ -121,6 +123,7 @@ export class RobotVisual {
     this.squash = this.squashVel = 0;
     this.airTime = 0;
     this.prevVy = 0;
+    this.driftAmount = 0;
   }
 
   setTelemetry(t: WheelTelemetry | null): void {
@@ -186,6 +189,14 @@ export class RobotVisual {
       this.airTime = 0;
     }
     this.prevVy = vy;
+    const sideSpeed = Math.abs(_localV.x);
+    const slide = THREE.MathUtils.clamp((sideSpeed - 0.7) / 4, 0, 1);
+    const deliberate = (this.flags & RobotFlags.DRIFTING) !== 0
+      ? THREE.MathUtils.clamp((sideSpeed - 0.35) / 2.8, 0, 1) * 0.55 : 0;
+    const driftTarget = this.alive && grounded && Math.hypot(_localV.x, _localV.z) > 2.5
+      ? Math.max(slide, deliberate) : 0;
+    this.driftAmount += (driftTarget - this.driftAmount)
+      * (1 - Math.exp(-dt / (driftTarget > this.driftAmount ? 0.1 : 0.22)));
     this.squashVel += (-this.squash * 220 - this.squashVel * 16) * dt;
     this.squash += this.squashVel * dt;
 

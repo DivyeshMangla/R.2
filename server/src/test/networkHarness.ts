@@ -1,7 +1,7 @@
 /** Real WebSocket smoke test; start the server first. No report files written. */
 import assert from 'node:assert/strict';
 import { Client, type Room } from '@colyseus/sdk';
-import { getArenaDefinition, MAPS, Msg, ROOM_NAME, type EventsMsg, type GameEvent, type RosterMsg, type SnapshotMsg, type WelcomeMsg } from '@robot-arena/shared';
+import { getArenaDefinition, isWeaponId, MAPS, Msg, ROOM_NAME, type EventsMsg, type GameEvent, type RosterMsg, type SnapshotMsg, type WelcomeMsg } from '@robot-arena/shared';
 
 interface Connected {
   room: Room;
@@ -66,12 +66,19 @@ async function main(): Promise<void> {
       const partner = await join(map.id, `${namePrefix}${map.id}B`, 'bulwark');
       assert.equal(selected.room.roomId, partner.room.roomId, `${map.id}: same-map players must match together`);
       assert.equal(selected.welcome!.mapId, map.id, `${map.id}: welcome must keep the selected biome`);
-      const expectedPads = getArenaDefinition(map.id).pickups.map((pad) => [pad.id, pad.weaponId, pad.position]);
-      assert.deepEqual(selected.snapshot!.pickups!.map((pad) => [pad.id, pad.weaponId, pad.position]), expectedPads);
+      const expectedPads = getArenaDefinition(map.id).pickups.map((pad) => [pad.id, pad.position]);
+      // Pads restock with random weapons; their physical identity and position
+      // stay fixed, while the currently rolled weapon must belong to the roster.
+      assert.deepEqual(selected.snapshot!.pickups!.map((pad) => [pad.id, pad.position]), expectedPads);
+      assert.ok(selected.snapshot!.pickups!.every((pad) => isWeaponId(pad.weaponId)), `${map.id}: invalid weapon on a random pad`);
       assert.ok(!selected.roster!.players.some((entry) => entry.name === `${namePrefix}A`), `${map.id}: another map roster leaked into the room`);
       mapConnections.push(selected);
     }
     assert.equal(new Set(mapConnections.map(({ room }) => room.roomId)).size, MAPS.length, 'All six maps must have separate rooms');
+    for (const connection of mapConnections) {
+      assert.ok(connection.snapshot!.r.every((wire) => wire.length >= 31 && Number.isFinite(wire[30]) && wire[30] >= 0 && wire[30] <= 10000),
+        'Live snapshots must carry a finite drift blend for every robot');
+    }
     for (const connection of connections) connection.events.length = 0;
     const currentSpeed = first.welcome!.tuning.maxSpeed;
     first.room.send(Msg.TUNE, { key: 'maxSpeed', value: currentSpeed });

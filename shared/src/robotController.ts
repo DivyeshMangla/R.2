@@ -28,6 +28,8 @@ export interface DriveInput {
   steer: number;
   boost: boolean;
   ability: boolean;
+  /** Hold the handbrake with steering to initiate a controlled rear-axle slide. */
+  drift?: boolean;
 }
 
 /** Per-robot simulation state beyond the rigid body itself (must be reconciled too). */
@@ -39,6 +41,8 @@ export interface RobotSimState {
   steeringAngle: number;
   /** Smoothed signed propulsion demand; braking clears it immediately. */
   driveDemand: number;
+  /** Blended handbrake/rear grip state; part of authoritative reconciliation. */
+  driftAmount: number;
 }
 
 export interface RobotPhysState {
@@ -74,7 +78,7 @@ export class RobotController {
   readonly body: RigidBody;
   readonly collider: Collider;
   readonly vehicle: DynamicRayCastVehicleController;
-  readonly sim: RobotSimState = { boostEnergy: 100, dashCooldown: 0, flipTimer: 0, boosting: false, steeringAngle: 0, driveDemand: 0 };
+  readonly sim: RobotSimState = { boostEnergy: 100, dashCooldown: 0, flipTimer: 0, boosting: false, steeringAngle: 0, driveDemand: 0, driftAmount: 0 };
   modifiers: RobotModifiers = { speedMul: 1, engineMul: 1, gripMul: 1, hasDash: false };
 
   private readonly world: World;
@@ -135,6 +139,10 @@ export class RobotController {
         boxInertia(cfg.chassisMass, CHASSIS_HALF),
         { x: 0, y: 0, z: 0, w: 1 },
       );
+      // Rapier otherwise defers this until world.step(). Prediction drives a
+      // newly-created controller first, so it must see the same 360 kg mass and
+      // inertia as a warmed authoritative/replayed controller immediately.
+      this.body.recomputeMassPropertiesFromColliders();
     }
     this.body.setLinearDamping(cfg.linearDamping);
     this.body.setAngularDamping(cfg.angularDamping);
@@ -175,7 +183,10 @@ export class RobotController {
 
     const maxSpeed = cfg.maxSpeed * mods.speedMul * (sim.boosting ? cfg.boostMaxSpeedMul : 1);
     const driveLimit = maxSpeed * (throttle < 0 ? 0.5 : 1);
-    const speedAlongInput = forwardSpeed * Math.sign(throttle);
+    // Cap propulsion by actual ground speed during a slide, not just its
+    // projection onto the rotated chassis (which otherwise adds free speed).
+    const speedAlongInput = throttle > 0 && forwardSpeed > 0
+      ? planarSpeed : forwardSpeed * Math.sign(throttle);
     // Keyboard edges should not slam full axle torque into the tyres. Braking
     // overrides the spool immediately, and a direction change starts from zero.
     if (directionBraking || stunned || throttle === 0 || throttle * sim.driveDemand < 0) sim.driveDemand = 0;
@@ -184,8 +195,9 @@ export class RobotController {
     }
     let engine = (sim.driveDemand * cfg.engineForce * mods.engineMul * (sim.boosting ? cfg.boostForceMul : 1)) / 4;
     if (throttle < 0) engine *= cfg.reverseFactor;
-    // Ease off over the final 20% instead of alternating full power and zero at the limit.
-    engine *= clamp((driveLimit - speedAlongInput) / (driveLimit * 0.2), 0, 1);
+    // A narrow torque roll-off reaches the usable cap promptly while still
+    // settling continuously; an asymptotic 20% taper made "max speed" unreachable.
+    engine *= clamp((driveLimit - speedAlongInput) / Math.max(0.1, driveLimit * 0.035), 0, 1);
 
     let brake = 0;
     if (directionBraking) {
@@ -211,7 +223,12 @@ export class RobotController {
     const steeringResponse = centering ? cfg.steerReturnResponse : cfg.steerResponse;
     sim.steeringAngle += (targetSteer - sim.steeringAngle) * (1 - Math.exp(-steeringResponse * dt));
     const v = this.vehicle;
+    // Rear grip follows the last reconciled drift blend. Engagement is updated
+    // from this step's actual contacts below, never hidden previous raycast data.
     for (let i = 0; i < WHEEL_ANCHORS.length; i++) {
+      const axleGrip = 1 - sim.driftAmount * (1 - (i >= 2 ? cfg.driftGrip : cfg.driftFrontGrip));
+      v.setWheelFrictionSlip(i, cfg.frictionSlip * mods.gripMul * axleGrip);
+      v.setWheelSideFrictionStiffness(i, cfg.sideFrictionStiffness * mods.gripMul * axleGrip);
       v.setWheelEngineForce(i, engine);
       v.setWheelBrake(i, brake);
       v.setWheelSteering(i, i < 2 ? sim.steeringAngle : 0);
@@ -232,6 +249,25 @@ export class RobotController {
     let contacts = 0;
     for (let i = 0; i < WHEEL_ANCHORS.length; i++) if (v.wheelIsInContact(i)) contacts++;
     const grounded = contacts > 0;
+    const wantsDrift = !!input.drift && !stunned && !directionBraking
+      && throttle >= 0 && forwardSpeed >= cfg.driftMinSpeed && up.y > 0.85
+      && contacts >= 3 && (Math.abs(steer) > 0.15 || sim.driftAmount > 0.1);
+    sim.driftAmount += ((wantsDrift ? 1 : 0) - sim.driftAmount)
+      * (1 - Math.exp(-(wantsDrift ? cfg.driftResponse : cfg.driftRecovery) * dt));
+    if (sim.driftAmount < 0.001) sim.driftAmount = 0;
+
+    // Arcade steering still acts through torque and tyre impulses. The yaw
+    // servo follows continuous wheel lock, including a soft, countersteerable
+    // handbrake arc. It cannot alter an airborne/inverted/stunned chassis.
+    if (contacts >= 3 && up.y > 0.85 && !stunned && Math.abs(forwardSpeed) > 0.5) {
+      const turnRate = forwardSpeed * Math.tan(sim.steeringAngle) / wheelbase;
+      const driftRate = clamp(sim.steeringAngle / lock, -1, 1) * cfg.driftYawRate * clamp(forwardSpeed / cfg.maxSpeed, 0, 1);
+      const desiredYaw = turnRate * (1 - sim.driftAmount) + driftRate * sim.driftAmount;
+      const yawError = clamp(desiredYaw - this.body.angvel().y, -4, 4);
+      const yawImpulse = boxInertia(mass, CHASSIS_HALF).y * yawError
+        * (1 - Math.exp(-cfg.yawResponse * (1 + sim.driftAmount) * dt));
+      this.body.applyTorqueImpulse({ x: 0, y: yawImpulse, z: 0 }, true);
+    }
 
     // A small tyre-like scrub removes unwanted lateral drift without prescribing
     // heading, erasing external knockback, or straightening an airborne chassis.
@@ -240,7 +276,7 @@ export class RobotController {
       const right = { x: flatForward.z, y: 0, z: -flatForward.x };
       const lateralSpeed = dot(this.body.linvel(), right);
       const contactWeight = (contacts / WHEEL_ANCHORS.length) * clamp((up.y - 0.75) / 0.25, 0, 1);
-      const scrub = -lateralSpeed * mass * (1 - Math.exp(-cfg.lateralDamping * contactWeight * dt));
+      const scrub = -lateralSpeed * mass * (1 - Math.exp(-cfg.lateralDamping * (1 - sim.driftAmount * 0.9) * contactWeight * dt));
       this.body.applyImpulse({ x: right.x * scrub, y: 0, z: right.z * scrub }, true);
     }
 
@@ -289,6 +325,7 @@ export class RobotController {
     this.sim.boosting = false;
     this.sim.steeringAngle = 0;
     this.sim.driveDemand = 0;
+    this.sim.driftAmount = 0;
   }
 
   setEnabled(enabled: boolean): void {

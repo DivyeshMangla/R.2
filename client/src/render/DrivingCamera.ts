@@ -8,12 +8,14 @@ export interface DrivingViewIntent {
   firing: boolean;
   steady: boolean;
   recenter: boolean;
+  /** Physical slide blend: keep automatic follow abreast of sustained drift yaw. */
+  driftAmount?: number;
 }
 
-const AUTO_DELAY = 1.2;
-const AUTO_BLEND_SECONDS = 0.65;
+const AUTO_DELAY = 0.65;
+const AUTO_BLEND_SECONDS = 0.3;
 const LOOK_BACK_LIMIT = 100 * Math.PI / 180;
-const AUTO_RATE = 75 * Math.PI / 180;
+const AUTO_RATE = 120 * Math.PI / 180;
 const MANUAL_RATE = 160 * Math.PI / 180;
 
 function wrapYaw(yaw: number): number {
@@ -29,22 +31,27 @@ export class DrivingCamera {
   private manualMouseSerial = 0;
   private lookBack = false;
   private lastMouseSerial = -1;
+  private driftBlend = 0;
 
   reset(): void {
     this.manual = false;
     this.lookBack = false;
     this.lastMouseSerial = -1;
+    this.driftBlend = 0;
   }
 
   update(viewYaw: number, chassisYaw: number, forwardSpeed: number, dt: number, intent: DrivingViewIntent): number {
     if (!Number.isFinite(viewYaw) || !Number.isFinite(chassisYaw)) return 0;
     const h = clamp(dt, 0, 0.1);
+    const drift = Number.isFinite(intent.driftAmount) ? clamp(intent.driftAmount ?? 0, 0, 1) : 0;
+    this.driftBlend += (drift - this.driftBlend) * (1 - Math.exp(-h / 0.22));
     const delta = angleDiff(viewYaw, chassisYaw);
     const newMouse = intent.mouseSerial !== this.lastMouseSerial;
     this.lastMouseSerial = intent.mouseSerial;
     if (!intent.active) {
       this.manual = false;
       this.lookBack = false;
+      this.driftBlend = 0;
       return wrapYaw(viewYaw);
     }
     if (newMouse) this.lookBack = Math.abs(delta) > LOOK_BACK_LIMIT;
@@ -60,7 +67,12 @@ export class DrivingCamera {
     }
     if (!this.manual && (forwardSpeed <= 2 || this.lookBack || intent.mouseIdleSeconds <= AUTO_DELAY)) return wrapYaw(viewYaw);
     const blend = this.manual ? 1 : clamp((intent.mouseIdleSeconds - AUTO_DELAY) / AUTO_BLEND_SECONDS, 0, 1);
-    const response = this.manual ? 6.5 : 3.2 * blend;
+    // Both a tight ordinary corner and a held drift can exceed 90 degrees/s.
+    // The chase limit must clear that physical turn rate, or the view falls
+    // half a turn behind and reverses at the yaw wrap. Drift gets a slightly
+    // firmer response through a smooth blend, retaining a readable view offset.
+    // Explicit C recenter remains full strength; mouse/fire/RMB still own aim.
+    const response = this.manual ? 6.5 : (4.5 + this.driftBlend * 0.3) * blend;
     const rate = this.manual ? MANUAL_RATE : AUTO_RATE * blend;
     const move = clamp(delta * (1 - Math.exp(-response * h)), -rate * h, rate * h);
     const yaw = wrapYaw(viewYaw + move);

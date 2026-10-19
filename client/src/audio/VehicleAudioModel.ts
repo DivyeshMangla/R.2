@@ -7,6 +7,8 @@ export interface VehicleAudioInput {
   throttle: number;
   /** Optional actual smoothed propulsion demand; braking should report zero. */
   driveDemand?: number;
+  /** Smoothed physical drift state; does not create tire noise without real slip. */
+  driftAmount?: number;
   grounded: boolean;
   boosting: boolean;
   alive: boolean;
@@ -66,7 +68,9 @@ export class VehicleAudioModel {
       else if (this.gear > 1 && normalized < GEAR_DOWN[this.gear - 1]) next--;
       if (next !== this.gear) {
         this.gear = next;
-        this.shiftDwell = 0.7;
+        // A full arcade launch now lasts 1.5 s. Let its transmission keep up,
+        // while hysteresis still prevents chatter around each shift boundary.
+        this.shiftDwell = 0.34;
         this.shiftCut = 0.16;
         this.frame.changedGear = running && speed > 1;
       }
@@ -83,10 +87,14 @@ export class VehicleAudioModel {
     const loadTarget = running ? demand * (this.shiftCut > 0 ? 0.34 : 1) : 0;
     this.frame.load = approach(this.frame.load, loadTarget, dt, loadTarget > this.frame.load ? 0.09 : 0.16);
     // Deadbands reject resting contact jitter; scrub is broadband, never a sine squeal.
-    const slipTarget = running && input.grounded && speed > 0.8
-      ? clamp((Math.abs(finite(input.lateralSpeed)) - 0.75) / 4.5, 0, 1) : 0;
-    this.frame.slip = approach(this.frame.slip, slipTarget, dt, slipTarget > this.frame.slip ? 0.08 : 0.16);
     const horizontal = Math.hypot(speed, finite(input.lateralSpeed));
+    const sideSpeed = Math.abs(finite(input.lateralSpeed));
+    const naturalScrub = clamp((sideSpeed - 0.75) / 4.5, 0, 1);
+    const driftScrub = clamp(finite(input.driftAmount ?? 0), 0, 1)
+      * clamp((sideSpeed - 0.35) / 2.8, 0, 1) * 0.55;
+    const slipTarget = running && input.grounded && horizontal > 1.2
+      ? Math.max(naturalScrub, driftScrub) : 0;
+    this.frame.slip = approach(this.frame.slip, slipTarget, dt, slipTarget > this.frame.slip ? 0.1 : 0.22);
     const roadTarget = running && input.grounded ? clamp((horizontal - 0.65) / maxSpeed, 0, 1.25) : 0;
     this.frame.road = approach(this.frame.road, roadTarget, dt, 0.12);
     this.frame.wind = approach(this.frame.wind, running ? clamp((horizontal / maxSpeed - 0.28) / 1.1, 0, 1) ** 2 : 0, dt, 0.3);

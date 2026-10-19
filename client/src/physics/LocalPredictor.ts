@@ -19,12 +19,13 @@ export interface PredictionStats {
 const SNAP_DISTANCE = 4;
 const MAX_PENDING = 120;
 
-function toDrive(f: InputFrame): { throttle: number; steer: number; boost: boolean; ability: boolean } {
+function toDrive(f: InputFrame): { throttle: number; steer: number; boost: boolean; ability: boolean; drift: boolean } {
   return {
     throttle: f.throttle,
     steer: f.steer,
     boost: (f.buttons & Buttons.BOOST) !== 0,
     ability: (f.buttons & Buttons.ABILITY) !== 0,
+    drift: (f.buttons & Buttons.DRIFT) !== 0,
   };
 }
 
@@ -71,6 +72,7 @@ export class LocalPredictor {
     this.controller.setState(state);
     this.controller.sim.steeringAngle = state.steeringAngle;
     this.controller.sim.driveDemand = state.driveDemand;
+    this.controller.sim.driftAmount = state.driftAmount;
     this.physics.registerLocal(this.controller.collider, robotId);
     this.spawnCount = state.spawnCount;
     this.capture(true);
@@ -144,6 +146,7 @@ export class LocalPredictor {
     c.sim.flipTimer = server.flipTimer;
     c.sim.steeringAngle = server.steeringAngle;
     c.sim.driveDemand = server.driveDemand;
+    c.sim.driftAmount = server.driftAmount;
 
     // The world also contains kinematic proxies; stepping it re-simulates contacts against them.
     for (const f of this.pending) {

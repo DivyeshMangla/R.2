@@ -33,6 +33,17 @@ export interface PhysicsConfig {
   /** Gentle grounded lateral-velocity damping (1/s), never a heading servo. */
   lateralDamping: number;
   downforce: number;
+  /** Contact-only yaw response: torque, never a heading/velocity assignment. */
+  yawResponse: number;
+  driftMinSpeed: number;
+  /** Rear axle grip fraction while the handbrake is held. */
+  driftGrip: number;
+  /** Front grip remains higher than rear grip to keep countersteer authority. */
+  driftFrontGrip: number;
+  driftResponse: number;
+  driftRecovery: number;
+  /** Maximum controlled handbrake yaw rate (rad/s). */
+  driftYawRate: number;
 
   // Suspension & tyres
   suspensionRestLength: number;
@@ -128,19 +139,26 @@ export const DEFAULT_PHYSICS_CONFIG: Readonly<PhysicsConfig> = Object.freeze({
   chassisFriction: 0.4,
   chassisRestitution: 0.15,
 
-  engineForce: 1850,
+  engineForce: 5200,
   reverseFactor: 0.6,
-  maxSpeed: 16,
-  brakeForce: 17.5,
-  rollingBrake: 2.4,
+  maxSpeed: 20,
+  brakeForce: 22,
+  rollingBrake: 3.1,
   maxSteerAngle: 0.60,
   steerSpeedFalloff: 0.025,
-  steerResponse: 15,
-  steerReturnResponse: 25,
-  throttleResponse: 7,
-  maxLateralAcceleration: 8,
-  lateralDamping: 0.35,
-  downforce: 0.2,
+  steerResponse: 10,
+  steerReturnResponse: 14,
+  throttleResponse: 12,
+  maxLateralAcceleration: 17,
+  lateralDamping: 1.4,
+  downforce: 0.35,
+  yawResponse: 9,
+  driftMinSpeed: 6,
+  driftGrip: 0.3,
+  driftFrontGrip: 0.55,
+  driftResponse: 7,
+  driftRecovery: 4,
+  driftYawRate: 1.35,
 
   suspensionRestLength: 0.32,
   suspensionStiffness: 34,
@@ -232,9 +250,16 @@ export const PHYSICS_CONFIG_RANGES: Readonly<Record<PhysicsConfigKey, readonly [
   steerResponse: [2, 30, 0.5],
   steerReturnResponse: [2, 40, 0.5],
   throttleResponse: [1, 30, 0.5],
-  maxLateralAcceleration: [3, 20, 0.25],
+  maxLateralAcceleration: [3, 30, 0.25],
   lateralDamping: [0, 3, 0.05],
   downforce: [0, 3, 0.01],
+  yawResponse: [0, 20, 0.25],
+  driftMinSpeed: [2, 15, 0.25],
+  driftGrip: [0.05, 1, 0.01],
+  driftFrontGrip: [0.1, 1, 0.01],
+  driftResponse: [1, 20, 0.25],
+  driftRecovery: [1, 15, 0.25],
+  driftYawRate: [0.3, 3, 0.05],
   suspensionRestLength: [0.05, 0.8, 0.01],
   suspensionStiffness: [5, 120, 0.5],
   suspensionCompression: [0.1, 15, 0.05],

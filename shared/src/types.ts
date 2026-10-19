@@ -13,6 +13,7 @@ export const Buttons = {
   BOOST: 2,
   ABILITY: 4,
   INTERACT: 8,
+  DRIFT: 16,
 } as const;
 
 export interface InputFrame {
@@ -67,7 +68,7 @@ export function decodeInput(w: unknown): InputFrame | null {
     throttle: Math.max(-1, Math.min(1, t / 127)),
     steer: Math.max(-1, Math.min(1, s / 127)),
     aimYaw: a / (v2 ? AIM_Q : 1000),
-    buttons: b & 15,
+    buttons: b & 31,
     aimPitch: v2 ? Math.max(-1.5, Math.min(1.5, (w[5] as number) / AIM_Q)) : 0,
     viewT: v2 ? Math.max(0, w[6] as number) : 0,
   };
@@ -91,6 +92,7 @@ export const RobotFlags = {
   POISONED: 64,
   SLOWED: 128,
   SHIELDED: 256,
+  DRIFTING: 512,
 } as const;
 
 export interface RobotNetState {
@@ -118,9 +120,11 @@ export interface RobotNetState {
   steeringAngle: number;
   /** Signed propulsion spool, restored before replay. */
   driveDemand: number;
+  /** Rear-grip blend, restored before prediction replay (0 = grip, 1 = drift). */
+  driftAmount: number;
 }
 
-/** Robot snapshot entry. Appended: 27 aimPitch, 28 steeringAngle, 29 driveDemand (all *10000). */
+/** Robot snapshot entry. Appended: 27 aimPitch, 28 steeringAngle, 29 driveDemand, 30 driftAmount (all *10000). */
 export type RobotWire = number[];
 
 const POS_Q = 1000;
@@ -149,6 +153,7 @@ export function encodeRobot(s: RobotNetState): RobotWire {
     Math.round(s.aimPitch * 10000),
     Math.round(s.steeringAngle * 10000),
     Math.round(s.driveDemand * 10000),
+    Math.round(s.driftAmount * 10000),
   ];
 }
 
@@ -177,6 +182,7 @@ export function decodeRobot(w: RobotWire): RobotNetState {
     aimPitch: (w[27] ?? 0) / 10000,
     steeringAngle: (w[28] ?? 0) / 10000,
     driveDemand: (w[29] ?? 0) / 10000,
+    driftAmount: Math.max(0, Math.min(1, (w[30] ?? 0) / 10000)),
   };
 }
 

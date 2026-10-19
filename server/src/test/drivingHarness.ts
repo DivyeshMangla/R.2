@@ -150,9 +150,8 @@ async function main(): Promise<void> {
   check(physicsConfig.gravity > 0 && physicsConfig.chassisMass > 0 && physicsConfig.maxSpeed > 0 && physicsConfig.engineForce > 0, 'Gravity, mass, speed, and engine force must be positive');
   if (failures.length > 0) throw new Error(failures.join('; '));
   const cap = physicsConfig.maxSpeed;
-  // Preserve the response targets as cruising speed changes: stopping distance
-  // scales with speed at equal stopping time, corner radius with speed squared
-  // at the same lateral-acceleration limit.
+  // Preserve braking time when cruising speed changes. Steering gets its own
+  // arena-sized corner-radius target rather than preserving the old wide arc.
   const speedRatio = cap / 12;
   // Allow a small one-tick overshoot without allowing a broken speed limiter.
   const tolerance = Math.max(0.6, cap * 0.06);
@@ -178,14 +177,15 @@ async function main(): Promise<void> {
       const maxSpeed = extrema(t, (s) => s.speed);
       const forwardDistance = t.end.state.p.z - t.start.state.p.z;
       const coast = f.run(3, IDLE);
-      const first90 = t.samples.findIndex((s) => s.forwardSpeed >= cap * 0.9);
-      const accelerationTime = first90 < 0 ? t.duration : (first90 + 1) * FIXED_DT;
+      const first99 = t.samples.findIndex((s) => s.forwardSpeed >= cap * 0.99);
+      const accelerationTime = first99 < 0 ? t.duration : (first99 + 1) * FIXED_DT;
       const coastRetained = coast.end.speed / coast.start.speed;
       check(forwardDistance > cap * 2 && t.end.forwardSpeed > cap * 0.7, 'Forward input should move forward and reach normal driving speed');
       check(maxSpeed <= cap + tolerance, 'Forward driving exceeded the configured normal speed cap');
       check(coast.end.speed < coast.start.speed * 0.8, 'Releasing throttle should noticeably slow the robot');
       check(extrema(coast, (s) => s.speed) <= coast.start.speed + 0.3, 'Coasting should not accelerate the robot');
-      check(accelerationTime >= 3 && accelerationTime <= 4, '0–90% acceleration should build in 3–4 seconds');
+      check(accelerationTime >= 1.30 && accelerationTime <= 1.55, '0–99% acceleration should reach usable top speed in approximately 1.5 seconds');
+      check(t.samples[Math.round(1.5 / FIXED_DT) - 1].forwardSpeed >= cap * 0.99, 'Full throttle must reach 99% of top speed by 1.5 seconds');
       check(coastRetained >= 0.45 && coastRetained <= 0.65, 'Coasting should retain 45–65% of speed after three seconds');
       check(f.robot.sim.driveDemand === 0, 'Releasing the throttle should remove stored propulsion');
       return { forwardDistance, endSpeed: t.end.forwardSpeed, maxSpeed, accelerationTime, coastRetained, coastEndSpeed: coast.end.speed, coastDistance: coast.end.state.p.z - coast.start.state.p.z };
@@ -248,7 +248,8 @@ async function main(): Promise<void> {
       check(yawChange < -0.5, 'Right steering while driving forward should turn right');
       check(minUp > 0.4 && maxHeight < 2.5 && maxAngularSpeed < 10, 'Full steering on flat ground should remain upright and stable');
       check(extrema(t, (s) => s.speed) <= cap + tolerance, 'Turning should respect the normal speed cap');
-      check(turnRadius >= 16 * speedRatio ** 2 && turnRadius <= 21 * speedRatio ** 2, 'Full-speed corner radius should preserve the lateral-acceleration envelope');
+      check(turnRadius >= 20 && turnRadius <= 30, 'Full-speed corner radius should remain responsive at 20–30 metres rather than a highway-sized arc');
+      check(t.end.speed > cap * 0.90, 'Normal cornering should retain at least 90% of cruising speed');
       return { yawChange, minUp, maxHeight, maxAngularSpeed, turnRadius, endSpeed: t.end.speed };
     } finally { f.dispose(); }
   }));
@@ -340,8 +341,8 @@ async function main(): Promise<void> {
       }
       const attackTime = attackTicks * FIXED_DT;
       const returnTime = returnTicks * FIXED_DT;
-      check(attackTime >= 0.12 && attackTime <= 0.18, 'Steering should reach 90% lock in 120–180ms');
-      check(returnTime >= 0.08 && returnTime <= 0.12, 'Steering should return 90% to centre in 80–120ms');
+      check(attackTime >= 0.20 && attackTime <= 0.26, 'Steering should reach 90% lock in 200–260ms for smooth keyboard turns');
+      check(returnTime >= 0.14 && returnTime <= 0.20, 'Steering should return 90% to centre in 140–200ms');
       return { attackTime, returnTime };
     } finally { f.dispose(); }
   }));

@@ -302,3 +302,6 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #ece6d8; col
 .drive-tip { display: block; font-size: 9px; line-height: 1.3; color: var(--muted); font-weight: 600; margin-top: 4px; }
 @media (max-width: 900px) { .drive-feedback { left: 16px; bottom: 184px; width: 166px; } }
 @media (max-width: 640px) { .drive-feedback { left: auto; right: 16px; bottom: 158px; width: 105px; padding: 8px; border-left-width: 3px; } .drive-speed { font-size: 28px; min-width: 26px; } .drive-speed-row { gap: 4px; } .drive-speed-row > small { font-size: 8px; } .drive-heading { font-size: 15px; } .drive-mode { font-size: 9px; letter-spacing: .08em; } .drive-tip { display: none; } }
+
+.drive-feedback[data-mode=drift] { border-left-color: #b66b25; }
+.drive-feedback[data-mode=drift] .drive-mode { color: #9c4c1f; letter-spacing: .2em; }

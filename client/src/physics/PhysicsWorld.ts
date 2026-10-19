@@ -32,6 +32,10 @@ export class PhysicsWorld {
   constructor(mapId: MapId = 'foundry') {
     this.world = createPhysicsWorld();
     this.envHandles = buildArenaColliders(this.world, mapId);
+    // Populate Rapier's scene-query broad phase before installing any dynamic
+    // robot. Otherwise its first predicted wheel raycasts miss the fresh arena,
+    // while reconciliation sees it, producing a different first drift step.
+    this.world.step();
   }
 
   readonly isEnvironment = (c: Collider): boolean => this.envHandles.has(c.handle);

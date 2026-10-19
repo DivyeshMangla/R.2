@@ -13,6 +13,7 @@
     "typecheck": "tsc -p shared --noEmit && tsc -p server --noEmit && tsc -p client --noEmit",
     "test:aim": "npm run test:aim -w server",
     "test:driving": "npm run test:driving -w server",
+    "test:drift": "npm run test:drift -w server",
     "test:lobby": "npm run test:lobby -w server",
     "test:bots": "npm run test:bots -w server",
     "test:maps": "npm run test:maps -w server",

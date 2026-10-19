@@ -94,7 +94,8 @@ export class InputManager {
     if (this.mouseDown || this.fireLatched) buttons |= Buttons.FIRE;
     this.fireLatched = false;
     if (k.has('ShiftLeft') || k.has('ShiftRight')) buttons |= Buttons.BOOST;
-    if (k.has('Space')) buttons |= Buttons.ABILITY;
+    if (k.has('Space')) buttons |= Buttons.DRIFT;
+    if (k.has('KeyQ')) buttons |= Buttons.ABILITY;
     if (k.has('KeyE')) buttons |= Buttons.INTERACT;
     this.seq += 1;
     return { seq: this.seq, throttle: fwd, steer, aimYaw: this.viewYaw, buttons, aimPitch: 0, viewT: 0 };
@@ -104,7 +105,9 @@ export class InputManager {
     this.viewYaw = yaw;
     this.viewPitch = -0.12;
     this.recenterRequested = false;
-    this.lastMouseAt = performance.now();
+    // A spawn/reset is not a player's mouse gesture: allow chase immediately
+    // on the first accelerating turn. Real pointer motion still owns the view.
+    this.lastMouseAt = -Infinity;
     this.lookSerial += 1;
   }
 
